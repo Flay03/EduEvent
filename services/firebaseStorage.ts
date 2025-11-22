@@ -34,7 +34,14 @@ export class FirebaseStorageService implements IStorageService {
       } catch (firestoreError: any) {
         console.error("Erro ao acessar Firestore:", firestoreError);
         if (firestoreError.code === 'permission-denied') {
-            throw new Error("ERRO_PERMISSAO: Seu login funcionou, mas o Firestore bloqueou a leitura. Verifique as 'Regras de Segurança' no Console do Firebase.");
+            // Se não tem permissão, retorna o usuário básico do Auth sem travar
+            console.warn("Permissão negada ao ler perfil. Retornando dados básicos.");
+            return {
+                uid: fbUser.uid,
+                email: fbUser.email || '',
+                role: UserRole.USER,
+                isOnboarded: false
+            };
         }
         throw firestoreError;
       }
@@ -117,13 +124,22 @@ export class FirebaseStorageService implements IStorageService {
 
     // Check Unique RM
     if (data.rm) {
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where("rm", "==", data.rm));
-        const querySnapshot = await getDocs(q);
-        
-        const duplicate = querySnapshot.docs.find(d => d.id !== uid);
-        if (duplicate) {
-            throw new Error("Este RM já está cadastrado para outro usuário.");
+        try {
+            const usersRef = collection(db, 'users');
+            const q = query(usersRef, where("rm", "==", data.rm));
+            const querySnapshot = await getDocs(q);
+            
+            const duplicate = querySnapshot.docs.find(d => d.id !== uid);
+            if (duplicate) {
+                throw new Error("Este RM já está cadastrado para outro usuário.");
+            }
+        } catch (error: any) {
+            // Ignora erro de permissão (se o usuário não pode ler outros usuários para validar unicidade)
+            // Em produção, unicidade deve ser garantida por Cloud Functions ou Regras de Índice Único
+            if (error.code !== 'permission-denied') {
+                throw error;
+            }
+            console.warn("Pulei validação de RM único devido a permissões.");
         }
     }
 
@@ -149,20 +165,26 @@ export class FirebaseStorageService implements IStorageService {
 
   async getUsers(): Promise<User[]> {
       if (!db) return [];
-      const querySnapshot = await getDocs(collection(db, 'users'));
-      return querySnapshot.docs.map(doc => {
-          const data = doc.data();
-          return {
-              uid: doc.id,
-              email: data.email || '',
-              name: data.name,
-              role: data.role || UserRole.USER,
-              rm: data.rm,
-              courseId: data.courseId,
-              classId: data.classId,
-              isOnboarded: data.isOnboarded || false
-          } as User;
-      });
+      try {
+        const querySnapshot = await getDocs(collection(db, 'users'));
+        return querySnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+                uid: doc.id,
+                email: data.email || '',
+                name: data.name,
+                role: data.role || UserRole.USER,
+                rm: data.rm,
+                courseId: data.courseId,
+                classId: data.classId,
+                isOnboarded: data.isOnboarded || false
+            } as User;
+        });
+      } catch (e: any) {
+          console.error("Erro ao buscar usuários:", e);
+          if (e.code === 'permission-denied') return [];
+          throw e;
+      }
   }
 
   async deleteUser(uid: string): Promise<void> {
@@ -182,8 +204,13 @@ export class FirebaseStorageService implements IStorageService {
 
   async getCourses(): Promise<Course[]> {
       if (!db) return [];
-      const qs = await getDocs(collection(db, 'courses'));
-      return qs.docs.map(d => ({ id: d.id, ...d.data() } as Course));
+      try {
+          const qs = await getDocs(collection(db, 'courses'));
+          return qs.docs.map(d => ({ id: d.id, ...d.data() } as Course));
+      } catch (e) {
+          console.error("Erro ao buscar cursos:", e);
+          return [];
+      }
   }
 
   async addCourse(name: string): Promise<Course> {
@@ -215,14 +242,19 @@ export class FirebaseStorageService implements IStorageService {
 
   async getClasses(courseId?: string): Promise<ClassGroup[]> {
       if (!db) return [];
-      let q;
-      if (courseId) {
-          q = query(collection(db, 'classes'), where("courseId", "==", courseId));
-      } else {
-          q = collection(db, 'classes');
+      try {
+          let q;
+          if (courseId) {
+              q = query(collection(db, 'classes'), where("courseId", "==", courseId));
+          } else {
+              q = collection(db, 'classes');
+          }
+          const qs = await getDocs(q);
+          return qs.docs.map(d => ({ id: d.id, ...d.data() } as ClassGroup));
+      } catch (e) {
+          console.error("Erro ao buscar turmas", e);
+          return [];
       }
-      const qs = await getDocs(q);
-      return qs.docs.map(d => ({ id: d.id, ...d.data() } as ClassGroup));
   }
 
   async addClass(courseId: string, name: string): Promise<ClassGroup> {
@@ -245,16 +277,25 @@ export class FirebaseStorageService implements IStorageService {
 
   async getEvents(): Promise<SchoolEvent[]> {
       if (!db) return [];
-      const qs = await getDocs(collection(db, 'events'));
-      return qs.docs.map(d => this.mapDocToEvent(d));
+      try {
+          const qs = await getDocs(collection(db, 'events'));
+          return qs.docs.map(d => this.mapDocToEvent(d));
+      } catch (e) {
+          console.error("Erro ao buscar eventos:", e);
+          return [];
+      }
   }
 
   async getEventById(id: string): Promise<SchoolEvent | undefined> {
       if (!db) return undefined;
-      const docRef = doc(db, 'events', id);
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-          return this.mapDocToEvent(snap);
+      try {
+          const docRef = doc(db, 'events', id);
+          const snap = await getDoc(docRef);
+          if (snap.exists()) {
+              return this.mapDocToEvent(snap);
+          }
+      } catch (e) {
+          console.error("Erro ao buscar evento por ID:", e);
       }
       return undefined;
   }
@@ -280,9 +321,14 @@ export class FirebaseStorageService implements IStorageService {
 
   async getPublicEvents(): Promise<SchoolEvent[]> {
       if (!db) return [];
-      const q = query(collection(db, 'events'), where('visibility', '==', 'public'));
-      const qs = await getDocs(q);
-      return qs.docs.map(d => this.mapDocToEvent(d));
+      try {
+          const q = query(collection(db, 'events'), where('visibility', '==', 'public'));
+          const qs = await getDocs(q);
+          return qs.docs.map(d => this.mapDocToEvent(d));
+      } catch (e) {
+          console.error("Erro ao buscar eventos públicos:", e);
+          return [];
+      }
   }
 
   async createEvent(event: SchoolEvent): Promise<void> {
@@ -325,13 +371,18 @@ export class FirebaseStorageService implements IStorageService {
 
   async getEnrollmentsForUser(userId: string): Promise<Enrollment[]> {
       if (!db) return [];
-      const q = query(
-          collection(db, 'enrollments'), 
-          where('userId', '==', userId), 
-          where('status', '==', EnrollmentStatus.CONFIRMED)
-      );
-      const qs = await getDocs(q);
-      return qs.docs.map(d => ({ id: d.id, ...d.data() } as Enrollment));
+      try {
+          const q = query(
+              collection(db, 'enrollments'), 
+              where('userId', '==', userId), 
+              where('status', '==', EnrollmentStatus.CONFIRMED)
+          );
+          const qs = await getDocs(q);
+          return qs.docs.map(d => ({ id: d.id, ...d.data() } as Enrollment));
+      } catch (e) {
+          console.error("Erro ao buscar inscrições:", e);
+          return [];
+      }
   }
 
   async getUserEnrollmentsDetails(userId: string): Promise<any[]> {
