@@ -78,11 +78,18 @@ export const EventDetails: React.FC = () => {
             const newEnrollment = await storageService.createEnrollment(user.uid, selectedEventForEnroll.id, sessionId);
             setFeedback({ type: 'success', msg: 'Inscrição realizada com sucesso!' });
             
-            // Optimistic update
+            // Optimistic update for UI responsiveness
             setMyEnrollments(prev => [...prev, newEnrollment]);
             
-            // Reload capacity and enrollments
-            await loadData();
+            // Reload capacity logic manually without reloading enrollments (avoid race condition)
+            if (id) {
+                 const pEvent = await storageService.getEventById(id);
+                 if (pEvent) setParentEvent(pEvent);
+
+                 const allVisible = await storageService.getAvailableEventsForUser(user);
+                 const children = allVisible.filter(e => e.parentId === id);
+                 setChildEvents(children);
+            }
             
             setTimeout(() => {
                 setSelectedEventForEnroll(null);
@@ -96,7 +103,7 @@ export const EventDetails: React.FC = () => {
                 setFeedback({ type: 'error', msg: msg || 'Falha ao inscrever' });
             }
         }
-    }, [user, selectedEventForEnroll, loadData]);
+    }, [user, selectedEventForEnroll, id]);
 
     const openEnrollModal = (event: SchoolEvent) => {
         setFeedback(null);

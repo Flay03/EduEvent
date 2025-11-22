@@ -218,8 +218,10 @@ export const Dashboard: React.FC = () => {
         // Optimistic/Immediate update of enrollments to reflect in UI instantly
         setMyEnrollments(prev => [...prev, newEnrollment]);
 
-        // Trigger full data refresh to ensure consistency (capacities etc)
-        await loadData();
+        // Refresh events (update capacity) but DO NOT refresh enrollments immediately
+        // to prevent race conditions where the backend might return stale enrollment list
+        const updatedEvents = await storageService.getAvailableEventsForUser(user);
+        setEvents(updatedEvents);
         
         setTimeout(() => {
             // Close modal on success
@@ -234,7 +236,7 @@ export const Dashboard: React.FC = () => {
             setFeedback({ type: 'error', msg: msg || 'Falha ao inscrever' });
         }
     }
-  }, [user, selectedEvent, loadData]); 
+  }, [user, selectedEvent]); 
 
   const handleEventAction = useCallback((event: SchoolEvent) => {
       const hasSubs = events.some(e => e.parentId === event.id);
