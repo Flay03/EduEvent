@@ -7,6 +7,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (email: string, password?: string) => Promise<void>;
+  loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -44,6 +45,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const loginWithGoogle = async () => {
+      setLoading(true);
+      try {
+          const user = await storageService.loginWithGoogle();
+          setUser(user);
+      } catch (e) {
+          console.error(e);
+          throw e;
+      } finally {
+          setLoading(false);
+      }
+  };
+
   const logout = async () => {
     await storageService.logout();
     setUser(null);
@@ -55,7 +69,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, logout, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );

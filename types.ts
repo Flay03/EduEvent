@@ -68,6 +68,7 @@ export interface Enrollment {
 export interface IStorageService {
   // Auth
   login(email: string, password?: string): Promise<User>;
+  loginWithGoogle(): Promise<User>; // Adicionado suporte a Google Auth
   logout(): Promise<void>;
   getCurrentUser(): Promise<User | null>;
   updateUserProfile(uid: string, data: Partial<User>): Promise<User>;

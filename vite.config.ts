@@ -11,11 +11,11 @@ export default defineConfig({
   resolve: {
     alias: {
       // Mapeia '@' para a raiz do projeto atual de forma simples
-      '@': path.resolve(process.cwd(), '.'),
+      '@': path.resolve('.'),
     }
   },
   // --- CONFIGURAÇÃO PARA GITHUB PAGES ---
   // Se o seu repositório for https://usuario.github.io/meu-projeto/
   // Troque '/' por '/meu-projeto/'
-  base: '/',
+  base: '/EduEvent/',
 });

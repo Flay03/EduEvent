@@ -1,7 +1,7 @@
 
 export const config = {
   // Mude para true quando quiser ativar o Firebase
-  useFirebase: true, 
+  useFirebase: false, 
   
   // Configurações do Firebase (Preencha com dados do seu Console)
   firebase: {

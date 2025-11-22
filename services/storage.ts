@@ -63,6 +63,29 @@ class MockStorageService implements IStorageService {
     return user;
   }
 
+  async loginWithGoogle(): Promise<User> {
+      // MOCK Google Login
+      await delay(800);
+      const email = "google.mock@example.com";
+      
+      const users = this.getItems<User>(STORAGE_KEYS.USERS);
+      let user = users.find(u => u.email === email);
+
+      if (!user) {
+        user = {
+          uid: `user_google_${Date.now()}`,
+          email,
+          name: "Google Mock User",
+          role: UserRole.USER,
+          isOnboarded: false
+        };
+        this.saveItem(STORAGE_KEYS.USERS, user);
+      }
+      
+      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+      return user;
+  }
+
   async logout(): Promise<void> {
     localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
   }
