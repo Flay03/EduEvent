@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-deploy:
-    concurrency: ci-${{ github.ref }} # Evita deploys simultâneos conflitantes
+    concurrency: ci-${{ github.ref }}
     runs-on: ubuntu-latest
 
     steps:
@@ -21,9 +21,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
-      - run: npm ci
+          # Removido cache: 'npm' pois ele depende do package-lock.json
+      
+      # Alterado de 'npm ci' para 'npm install' para gerar o lockfile dinamicamente
+      - run: npm install
       - run: npm run build
 
       - name: Deploy 🚀
