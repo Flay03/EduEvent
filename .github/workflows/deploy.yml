@@ -21,11 +21,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # Cache removido temporariamente para evitar conflitos sem lockfile
       
-      # Alterado de 'npm ci' para 'npm install' para funcionar sem package-lock.json
       - run: npm install
       - run: npm run build
+      
+      # CRÍTICO: Cria um arquivo .nojekyll para impedir que o GitHub ignore arquivos que começam com _
+      - run: touch dist/.nojekyll
 
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
