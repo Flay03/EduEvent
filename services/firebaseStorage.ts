@@ -543,6 +543,13 @@ export class FirebaseStorageService implements IStorageService {
       } catch (e: any) {
           // Se o erro já for uma mensagem nossa, repassa.
           if (e.message.includes("sessão atingiu") || e.message.includes("já está inscrito")) throw e;
+          
+          // Tratamento específico para erros de permissão do Firebase
+          if (e.code === 'permission-denied' || e.message.includes("Missing or insufficient permissions")) {
+             console.error("Erro de Permissão (Firestore):", e);
+             throw new Error("Erro de permissão: As regras do Firestore bloquearam a ação. Certifique-se de copiar o conteúdo de 'firestore.rules' para o Firebase Console > Firestore Database > Rules.");
+          }
+
           console.error("Erro na transação de inscrição:", e);
           throw new Error("Erro ao processar inscrição. Tente novamente.");
       }
@@ -631,6 +638,8 @@ export class FirebaseStorageService implements IStorageService {
           return 'O navegador bloqueou a janela de login. Permita pop-ups para este site.';
       case 'auth/operation-not-allowed':
           return 'Este método de login não está habilitado.';
+      case 'auth/unauthorized-domain':
+          return 'O domínio atual não está autorizado no Firebase. Adicione-o em Authentication > Settings > Authorized Domains no Console.';
       case 'permission-denied': 
           return 'Você não tem permissão para realizar esta ação.';
       case 'unavailable':

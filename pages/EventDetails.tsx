@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { SchoolEvent, Enrollment } from '../types';
 import { storageService } from '../services/storage';
@@ -21,9 +21,9 @@ export const EventDetails: React.FC = () => {
     const [feedback, setFeedback] = useState<{type: 'success'|'error', msg: string} | null>(null);
     const [conflictData, setConflictData] = useState<{name: string, time: string} | null>(null);
 
-    const loadData = async () => {
+    const loadData = useCallback(async () => {
         if (!id || !user) return;
-        setLoading(true);
+        setLoading(prev => prev && true); // Keep loading if initial load
         try {
             // 1. Get Parent Event
             const pEvent = await storageService.getEventById(id);
@@ -47,27 +47,45 @@ export const EventDetails: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [id, user, navigate]);
 
     useEffect(() => {
         loadData();
-    }, [id, user]);
+    }, [loadData]);
+
+    // Sync selectedEventForEnroll when data updates
+    useEffect(() => {
+        if (selectedEventForEnroll) {
+            if (parentEvent && parentEvent.id === selectedEventForEnroll.id) {
+                if(parentEvent !== selectedEventForEnroll) setSelectedEventForEnroll(parentEvent);
+            } else {
+                const child = childEvents.find(c => c.id === selectedEventForEnroll.id);
+                if (child && child !== selectedEventForEnroll) setSelectedEventForEnroll(child);
+            }
+        }
+    }, [parentEvent, childEvents, selectedEventForEnroll]);
 
     const isEnrolledInSession = (eventId: string, sessionId: string) => {
         return myEnrollments.some(e => e.eventId === eventId && e.sessionId === sessionId);
     };
 
-    const handleEnroll = async (sessionId: string) => {
+    const handleEnroll = useCallback(async (sessionId: string) => {
         if (!user || !selectedEventForEnroll) return;
         setFeedback(null);
         setConflictData(null);
         
         try {
-            await storageService.createEnrollment(user.uid, selectedEventForEnroll.id, sessionId);
+            const newEnrollment = await storageService.createEnrollment(user.uid, selectedEventForEnroll.id, sessionId);
             setFeedback({ type: 'success', msg: 'Inscrição realizada com sucesso!' });
-            await loadData(); // Reload capacity and enrollments
+            
+            // Optimistic update
+            setMyEnrollments(prev => [...prev, newEnrollment]);
+            
+            // Reload capacity and enrollments
+            await loadData();
+            
             setTimeout(() => {
-                if(!conflictData) setSelectedEventForEnroll(null);
+                setSelectedEventForEnroll(null);
             }, 1500);
         } catch (error: any) {
             const msg = error.message || '';
@@ -78,7 +96,7 @@ export const EventDetails: React.FC = () => {
                 setFeedback({ type: 'error', msg: msg || 'Falha ao inscrever' });
             }
         }
-    };
+    }, [user, selectedEventForEnroll, loadData]);
 
     const openEnrollModal = (event: SchoolEvent) => {
         setFeedback(null);

@@ -138,7 +138,7 @@ export const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 9;
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!user) return;
     const [availableEvents, enrollments] = await Promise.all([
         storageService.getAvailableEventsForUser(user),
@@ -146,11 +146,19 @@ export const Dashboard: React.FC = () => {
     ]);
     setEvents(availableEvents);
     setMyEnrollments(enrollments);
-  };
+  }, [user]);
 
   useEffect(() => {
     loadData();
-  }, [user]);
+  }, [loadData]);
+
+  // Sync selectedEvent details (e.g. capacity) when global events list updates
+  useEffect(() => {
+    if (selectedEvent) {
+        const updated = events.find(e => e.id === selectedEvent.id);
+        if (updated && updated !== selectedEvent) setSelectedEvent(updated);
+    }
+  }, [events, selectedEvent]);
 
   const hasChildren = useCallback((eventId: string) => {
       return events.some(e => e.parentId === eventId);
@@ -204,11 +212,18 @@ export const Dashboard: React.FC = () => {
     setConflictData(null);
     
     try {
-        await storageService.createEnrollment(user.uid, selectedEvent.id, sessionId);
+        const newEnrollment = await storageService.createEnrollment(user.uid, selectedEvent.id, sessionId);
         setFeedback({ type: 'success', msg: 'Inscrição realizada com sucesso!' });
+        
+        // Optimistic/Immediate update of enrollments to reflect in UI instantly
+        setMyEnrollments(prev => [...prev, newEnrollment]);
+
+        // Trigger full data refresh to ensure consistency (capacities etc)
         await loadData();
+        
         setTimeout(() => {
-            if(!conflictData) setSelectedEvent(null);
+            // Close modal on success
+            setSelectedEvent(null);
         }, 1500);
     } catch (error: any) {
         const msg = error.message || '';
@@ -219,7 +234,7 @@ export const Dashboard: React.FC = () => {
             setFeedback({ type: 'error', msg: msg || 'Falha ao inscrever' });
         }
     }
-  }, [user, selectedEvent, conflictData]); 
+  }, [user, selectedEvent, loadData]); 
 
   const handleEventAction = useCallback((event: SchoolEvent) => {
       const hasSubs = events.some(e => e.parentId === event.id);
