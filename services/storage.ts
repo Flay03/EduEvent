@@ -114,15 +114,12 @@ class MockStorageService implements IStorageService {
     this.notifyAuthListeners(null);
   }
 
-  async getCurrentUser(): Promise<User | null> {
-    const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    return stored ? JSON.parse(stored) : null;
-  }
-
   onAuthStateChanged(callback: (user: User | null) => void): () => void {
       this.authListeners.push(callback);
       // Notifica o estado atual imediatamente
-      this.getCurrentUser().then(user => callback(user));
+      const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+      const user = stored ? JSON.parse(stored) : null;
+      callback(user);
       
       // Retorna função de unsubscribe
       return () => {
@@ -151,7 +148,8 @@ class MockStorageService implements IStorageService {
     localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
     
     // Update session if it's the current user
-    const currentUser = await this.getCurrentUser();
+    const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+    const currentUser = stored ? JSON.parse(stored) : null;
     if (currentUser && currentUser.uid === uid) {
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(updatedUser));
       this.notifyAuthListeners(updatedUser);

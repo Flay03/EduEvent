@@ -84,7 +84,6 @@ export interface IStorageService {
   login(email: string, password?: string): Promise<User>;
   loginWithGoogle(): Promise<void>;
   logout(): Promise<void>;
-  getCurrentUser(): Promise<User | null>;
   // Novo método para observar mudanças de estado em tempo real (Crucial para Redirects)
   onAuthStateChanged(callback: (user: User | null) => void): () => void;
   

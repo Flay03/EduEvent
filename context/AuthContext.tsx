@@ -3,6 +3,9 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '../types';
 import { storageService } from '../services/storage';
+import { config } from '../config';
+import { auth } from '../services/firebase';
+import { getRedirectResult } from 'firebase/auth';
 
 interface AuthContextType {
   user: User | null;
@@ -10,7 +13,6 @@ interface AuthContextType {
   login: (email: string, password?: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
-  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -19,17 +21,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Mudança Crítica: Usar Subscription em vez de chamada única
   useEffect(() => {
-    // Inscreve-se nas mudanças de autenticação (Mock ou Firebase)
+    // This listener is the single source of truth for the user's auth state.
+    // It will fire on sign-in, sign-out, and when the redirect result is processed.
     const unsubscribe = storageService.onAuthStateChanged((updatedUser) => {
         setUser(updatedUser);
-        setLoading(false); // Para o loading assim que o primeiro estado for resolvido
+        setLoading(false);
     });
 
-    // Cleanup na desmontagem
+    // Proactively check for a redirect result on page load.
+    // We don't need to `await` this or use the result. If a login was successful,
+    // it will trigger the `onAuthStateChanged` listener above with the user data.
+    // If there was no redirect, it resolves to null and does nothing.
+    if (config.useFirebase && auth) {
+        getRedirectResult(auth).catch((error) => {
+            console.error("Error checking for redirect result:", error);
+        });
+    }
+
+    // Cleanup the listener on component unmount
     return () => unsubscribe();
   }, []);
+
 
   const login = async (email: string, password?: string) => {
     setLoading(true);
@@ -63,13 +76,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // O listener atualizará o user para null e loading para false
   };
 
-  const refreshProfile = async () => {
-    const currentUser = await storageService.getCurrentUser();
-    setUser(currentUser);
-  };
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   );

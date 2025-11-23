@@ -106,31 +106,6 @@ export class FirebaseStorageService implements IStorageService {
     await signOut(auth);
   }
 
-  async getCurrentUser(): Promise<User | null> {
-    if (!auth) return null;
-
-    // Primeiro, verifica se há um resultado de redirecionamento de login pendente.
-    // Isso é útil se chamado manualmente, mas a assinatura do onAuthStateChanged é preferível.
-    try {
-        const result = await getRedirectResult(auth);
-        if (result) {
-            return this._fetchUserProfile(result.user);
-        }
-    } catch (error: any) {
-        console.error("Erro no redirecionamento (getCurrentUser):", error);
-    }
-
-    const fbUser = await new Promise<any>((resolve) => {
-      const unsubscribe = onAuthStateChanged(auth!, (user) => {
-        unsubscribe();
-        resolve(user);
-      });
-    });
-
-    if (!fbUser) return null;
-    return this._fetchUserProfile(fbUser);
-  }
-
   // IMPLEMENTAÇÃO DO LISTENER DE ESTADO (CORREÇÃO DO BUG DE REDIRECT)
   onAuthStateChanged(callback: (user: User | null) => void): () => void {
       if (!auth) return () => {};
