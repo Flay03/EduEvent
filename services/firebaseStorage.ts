@@ -1,7 +1,3 @@
-
-
-
-
 import { 
   IStorageService, User, SchoolEvent, Enrollment, 
   UserRole, Course, ClassGroup, EnrollmentStatus, EventSession,
@@ -11,8 +7,7 @@ import { auth, db } from './firebase';
 import { formatDate, timeToMinutes } from '../utils/formatters';
 import { 
   signInWithEmailAndPassword, 
-  signInWithRedirect,
-  getRedirectResult,
+  signInWithPopup, // ALTERADO: Usando Popup
   GoogleAuthProvider,
   signOut, 
   onAuthStateChanged,
@@ -47,7 +42,9 @@ export class FirebaseStorageService implements IStorageService {
       if (!auth) throw new Error("Serviço de autenticação não inicializado.");
       try {
           const provider = new GoogleAuthProvider();
-          await signInWithRedirect(auth, provider);
+          // ALTERADO: Login via Popup para evitar reload da página e problemas de redirecionamento
+          await signInWithPopup(auth, provider);
+          // O listener onAuthStateChanged cuidará de buscar o perfil e atualizar o estado
       } catch (error: any) {
           console.error("Erro ao iniciar Login com Google:", error);
           throw new Error(this.mapAuthError(error.code));
@@ -106,7 +103,7 @@ export class FirebaseStorageService implements IStorageService {
     await signOut(auth);
   }
 
-  // IMPLEMENTAÇÃO DO LISTENER DE ESTADO (CORREÇÃO DO BUG DE REDIRECT)
+  // IMPLEMENTAÇÃO DO LISTENER DE ESTADO
   onAuthStateChanged(callback: (user: User | null) => void): () => void {
       if (!auth) return () => {};
 

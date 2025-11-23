@@ -1,11 +1,7 @@
-
-
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '../types';
 import { storageService } from '../services/storage';
 import { config } from '../config';
-import { auth } from '../services/firebase';
-import { getRedirectResult } from 'firebase/auth';
 
 interface AuthContextType {
   user: User | null;
@@ -23,21 +19,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     // This listener is the single source of truth for the user's auth state.
-    // It will fire on sign-in, sign-out, and when the redirect result is processed.
+    // It will fire on sign-in, sign-out, and initial load.
     const unsubscribe = storageService.onAuthStateChanged((updatedUser) => {
         setUser(updatedUser);
         setLoading(false);
     });
-
-    // Proactively check for a redirect result on page load.
-    // We don't need to `await` this or use the result. If a login was successful,
-    // it will trigger the `onAuthStateChanged` listener above with the user data.
-    // If there was no redirect, it resolves to null and does nothing.
-    if (config.useFirebase && auth) {
-        getRedirectResult(auth).catch((error) => {
-            console.error("Error checking for redirect result:", error);
-        });
-    }
 
     // Cleanup the listener on component unmount
     return () => unsubscribe();
@@ -61,8 +47,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(true);
       try {
           await storageService.loginWithGoogle();
-          // Não fazemos nada aqui porque a página vai redirecionar.
-          // O estado de loading persistirá até o reload.
+          // Com Popup, a promise resolve e o listener atualiza o estado.
+          // Não precisamos fazer nada além de aguardar.
       } catch (e) {
           console.error(e);
           setLoading(false);

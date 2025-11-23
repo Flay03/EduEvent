@@ -1,5 +1,3 @@
-
-
 import { User, SchoolEvent, Enrollment, EnrollmentStatus, UserRole, Course, ClassGroup, IStorageService, PaginatedQueryOptions, PaginatedResult } from '../types';
 import { formatDate, timeToMinutes } from '../utils/formatters';
 import { config } from '../config';
@@ -103,10 +101,8 @@ class MockStorageService implements IStorageService {
       
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
       
-      // No Mock, simulamos o reload e notificamos.
-      // Em produção, isso seria um redirect real.
+      // No Mock, apenas notificamos (comportamento de Popup)
       this.notifyAuthListeners(user);
-      window.location.reload();
   }
 
   async logout(): Promise<void> {
