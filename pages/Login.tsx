@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, Link } from 'react-router-dom';
 import { config } from '../config';
@@ -6,37 +6,48 @@ import { config } from '../config';
 export const Login: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const { login, loginWithGoogle } = useAuth();
+  const { user, loading: authLoading, login, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+
+  // Efeito para redirecionar se o usuário já estiver logado
+  useEffect(() => {
+    if (!authLoading && user) {
+      navigate('/dashboard');
+    }
+  }, [user, authLoading, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setLoading(true);
+    setActionLoading(true);
     try {
       await login(email, password);
-      navigate('/dashboard');
+      // A navegação será tratada pelo useEffect acima
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Falha no login. Verifique suas credenciais.');
     } finally {
-      setLoading(false);
+      setActionLoading(false);
     }
   };
 
   const handleGoogleLogin = async () => {
       setError('');
-      setLoading(true);
+      setActionLoading(true);
       try {
           await loginWithGoogle();
-          navigate('/dashboard');
+          // A página irá redirecionar, não é necessário navegar ou parar o loading aqui.
       } catch (err: any) {
           setError(err.message || "Erro ao autenticar com Google");
-      } finally {
-          setLoading(false);
+          setActionLoading(false); // Para o loading apenas se ocorrer um erro.
       }
+  }
+
+  // Enquanto verifica o estado de autenticação ou se já está redirecionando, mostra um loader.
+  if (authLoading || (!authLoading && user)) {
+    return <div className="h-screen flex items-center justify-center bg-gray-50">Verificando sessão...</div>;
   }
 
   return (
@@ -99,10 +110,10 @@ export const Login: React.FC = () => {
           <div>
             <button
               type="submit"
-              disabled={loading}
+              disabled={actionLoading}
               className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-primary hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-70"
             >
-              {loading ? 'Entrando...' : 'Entrar'}
+              {actionLoading ? 'Entrando...' : 'Entrar'}
             </button>
           </div>
 
@@ -118,7 +129,7 @@ export const Login: React.FC = () => {
            <button
               type="button"
               onClick={handleGoogleLogin}
-              disabled={loading}
+              disabled={actionLoading}
               className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-70"
             >
               <svg className="h-5 w-5 mr-2" aria-hidden="true" viewBox="0 0 24 24">

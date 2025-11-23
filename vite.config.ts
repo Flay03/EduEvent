@@ -17,5 +17,5 @@ export default defineConfig({
   // --- CONFIGURAÇÃO PARA GITHUB PAGES ---
   // Se o seu repositório for https://usuario.github.io/meu-projeto/
   // Troque '/' por '/meu-projeto/'
-  base: '/EduEvent/',
+  base: '/',
 });

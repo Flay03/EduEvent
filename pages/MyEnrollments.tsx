@@ -14,11 +14,14 @@ export const MyEnrollments: React.FC = () => {
   const loadData = async () => {
       if (!user) return;
       const enrollments = await storageService.getEnrollmentsForUser(user.uid);
-      const events = await storageService.getEvents();
+      // FIX: getEvents expects arguments and returns a paginated result.
+      // We fetch a large number to simulate getting all events for this view.
+      const eventsResult = await storageService.getEvents({ limit: 1000, filters: {} });
       
       // Join data
       const joined = enrollments.map(enr => {
-          const evt = events.find(e => e.id === enr.eventId);
+          // FIX: Access the .data property of the paginated result.
+          const evt = eventsResult.data.find(e => e.id === enr.eventId);
           if (!evt) return null;
           const sess = evt.sessions.find(s => s.id === enr.sessionId);
           if (!sess) return null;

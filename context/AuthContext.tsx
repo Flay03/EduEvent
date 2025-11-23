@@ -1,4 +1,5 @@
 
+
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '../types';
 import { storageService } from '../services/storage';
@@ -18,49 +19,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Mudança Crítica: Usar Subscription em vez de chamada única
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const currentUser = await storageService.getCurrentUser();
-        setUser(currentUser);
-      } catch (e) {
-        console.error("Auth check failed", e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    checkAuth();
+    // Inscreve-se nas mudanças de autenticação (Mock ou Firebase)
+    const unsubscribe = storageService.onAuthStateChanged((updatedUser) => {
+        setUser(updatedUser);
+        setLoading(false); // Para o loading assim que o primeiro estado for resolvido
+    });
+
+    // Cleanup na desmontagem
+    return () => unsubscribe();
   }, []);
 
   const login = async (email: string, password?: string) => {
     setLoading(true);
     try {
-      const user = await storageService.login(email, password);
-      setUser(user);
+      // O listener onAuthStateChanged vai atualizar o estado do usuário automaticamente,
+      // mas mantemos a chamada aqui para tratar erros de login (senha errada, etc).
+      await storageService.login(email, password);
     } catch (e) {
       console.error(e);
+      setLoading(false); // Reseta loading apenas em erro
       throw e;
-    } finally {
-      setLoading(false);
     }
   };
 
   const loginWithGoogle = async () => {
       setLoading(true);
       try {
-          const user = await storageService.loginWithGoogle();
-          setUser(user);
+          await storageService.loginWithGoogle();
+          // Não fazemos nada aqui porque a página vai redirecionar.
+          // O estado de loading persistirá até o reload.
       } catch (e) {
           console.error(e);
-          throw e;
-      } finally {
           setLoading(false);
+          throw e;
       }
   };
 
   const logout = async () => {
+    setLoading(true);
     await storageService.logout();
-    setUser(null);
+    // O listener atualizará o user para null e loading para false
   };
 
   const refreshProfile = async () => {

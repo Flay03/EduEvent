@@ -1,3 +1,4 @@
+
 export const formatDate = (dateString: string | undefined): string => {
   if (!dateString) return '';
   
@@ -15,4 +16,10 @@ export const formatDate = (dateString: string | undefined): string => {
   } catch (e) {
       return dateString;
   }
+};
+
+export const timeToMinutes = (time: string): number => {
+  if (!time) return 0;
+  const [hours, minutes] = time.split(':').map(Number);
+  return (hours * 60) + minutes;
 };

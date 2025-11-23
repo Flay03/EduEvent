@@ -1,5 +1,7 @@
-import { User, SchoolEvent, Enrollment, EnrollmentStatus, UserRole, Course, ClassGroup, IStorageService } from '../types';
-import { formatDate } from '../utils/formatters';
+
+
+import { User, SchoolEvent, Enrollment, EnrollmentStatus, UserRole, Course, ClassGroup, IStorageService, PaginatedQueryOptions, PaginatedResult } from '../types';
+import { formatDate, timeToMinutes } from '../utils/formatters';
 import { config } from '../config';
 import { FirebaseStorageService } from './firebaseStorage';
 
@@ -30,8 +32,20 @@ const STORAGE_KEYS = {
 // Helper to simulate delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// ===================================================================================
+// == AVISO DE SEGURANÇA: MOCK STORAGE SERVICE                                      ==
+// ===================================================================================
+// Este serviço é APENAS para desenvolvimento e testes locais. Ele utiliza
+// `localStorage`, que é INSEGURO. Qualquer usuário pode abrir o console do
+// navegador e modificar seus dados, incluindo seu nível de acesso (role) de 'user'
+// para 'admin', ganhando acesso irrestrito.
+// NUNCA utilize este serviço em um ambiente de produção.
+// ===================================================================================
 class MockStorageService implements IStorageService {
   
+  // Simples event emitter para simular o listener de auth no mock
+  private authListeners: ((user: User | null) => void)[] = [];
+
   constructor() {
       // Initialize Mock Data if empty
       if (!localStorage.getItem(STORAGE_KEYS.COURSES)) {
@@ -40,6 +54,10 @@ class MockStorageService implements IStorageService {
       if (!localStorage.getItem(STORAGE_KEYS.CLASSES)) {
           localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(INITIAL_CLASSES));
       }
+  }
+
+  private notifyAuthListeners(user: User | null) {
+      this.authListeners.forEach(cb => cb(user));
   }
 
   // --- Auth ---
@@ -60,10 +78,11 @@ class MockStorageService implements IStorageService {
     }
     
     localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+    this.notifyAuthListeners(user);
     return user;
   }
 
-  async loginWithGoogle(): Promise<User> {
+  async loginWithGoogle(): Promise<void> {
       // MOCK Google Login
       await delay(800);
       const email = "google.mock@example.com";
@@ -83,16 +102,32 @@ class MockStorageService implements IStorageService {
       }
       
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
-      return user;
+      
+      // No Mock, simulamos o reload e notificamos.
+      // Em produção, isso seria um redirect real.
+      this.notifyAuthListeners(user);
+      window.location.reload();
   }
 
   async logout(): Promise<void> {
     localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+    this.notifyAuthListeners(null);
   }
 
   async getCurrentUser(): Promise<User | null> {
     const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
     return stored ? JSON.parse(stored) : null;
+  }
+
+  onAuthStateChanged(callback: (user: User | null) => void): () => void {
+      this.authListeners.push(callback);
+      // Notifica o estado atual imediatamente
+      this.getCurrentUser().then(user => callback(user));
+      
+      // Retorna função de unsubscribe
+      return () => {
+          this.authListeners = this.authListeners.filter(cb => cb !== callback);
+      };
   }
 
   async updateUserProfile(uid: string, data: Partial<User>): Promise<User> {
@@ -119,15 +154,38 @@ class MockStorageService implements IStorageService {
     const currentUser = await this.getCurrentUser();
     if (currentUser && currentUser.uid === uid) {
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(updatedUser));
+      this.notifyAuthListeners(updatedUser);
     }
     
     return updatedUser;
   }
 
   // --- Admin: User Management ---
-  async getUsers(): Promise<User[]> {
+  async getUsers(options: PaginatedQueryOptions): Promise<PaginatedResult<User>> {
     await delay(500);
-    return this.getItems<User>(STORAGE_KEYS.USERS);
+    const allUsers = this.getItems<User>(STORAGE_KEYS.USERS);
+
+    const { searchTerm, role, courseId, classId } = options.filters;
+
+    const filtered = allUsers.filter(u => {
+        const matchesText = searchTerm ? 
+            u.name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+            u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            u.rm?.includes(searchTerm) : true;
+        const matchesRole = role ? u.role === role : true;
+        const matchesCourse = courseId ? u.courseId === courseId : true;
+        const matchesClass = classId ? u.classId === classId : true;
+        return matchesText && matchesRole && matchesCourse && matchesClass;
+    });
+
+    const cursor = options.cursor || 0;
+    const data = filtered.slice(cursor, cursor + options.limit);
+    const nextCursor = cursor + data.length;
+
+    return {
+        data,
+        nextCursor: nextCursor < filtered.length ? nextCursor : undefined
+    };
   }
 
   async deleteUser(uid: string): Promise<void> {
@@ -174,7 +232,7 @@ class MockStorageService implements IStorageService {
       courses = courses.filter(c => c.id !== id);
       localStorage.setItem(STORAGE_KEYS.COURSES, JSON.stringify(courses));
       
-      // Cascade delete classes? For now, let's keep them orphaned or clean up manually
+      // Cascade delete classes
       let classes = this.getItems<ClassGroup>(STORAGE_KEYS.CLASSES);
       classes = classes.filter(c => c.courseId !== id);
       localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(classes));
@@ -212,9 +270,38 @@ class MockStorageService implements IStorageService {
   }
 
   // --- Events ---
-  async getEvents(): Promise<SchoolEvent[]> {
+  async getEvents(options: PaginatedQueryOptions): Promise<PaginatedResult<SchoolEvent>> {
     await delay(400);
-    return this.getItems<SchoolEvent>(STORAGE_KEYS.EVENTS);
+    const allEvents = this.getItems<SchoolEvent>(STORAGE_KEYS.EVENTS);
+    const { searchTerm, visibility, course } = options.filters;
+    const classes = this.getItems<ClassGroup>(STORAGE_KEYS.CLASSES);
+
+    const filtered = allEvents.filter(evt => {
+        const matchesSearch = searchTerm ? evt.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                              evt.description.toLowerCase().includes(searchTerm.toLowerCase()) : true;
+        const matchesVisibility = visibility ? evt.visibility === visibility : true;
+        let matchesCourse = true;
+        if (course) {
+            if (evt.visibility === 'public') matchesCourse = false; 
+            else if (evt.visibility === 'course') matchesCourse = evt.allowedCourses?.includes(course) || false;
+            else if (evt.visibility === 'class') {
+                matchesCourse = evt.allowedClasses?.some(clsId => {
+                    const cls = classes.find(c => c.id === clsId);
+                    return cls?.courseId === course;
+                }) || false;
+            }
+        }
+        return matchesSearch && matchesVisibility && matchesCourse;
+    });
+
+    const cursor = options.cursor || 0;
+    const data = filtered.slice(cursor, cursor + options.limit);
+    const nextCursor = cursor + data.length;
+
+    return {
+        data,
+        nextCursor: nextCursor < filtered.length ? nextCursor : undefined
+    };
   }
 
   async getEventById(id: string): Promise<SchoolEvent | undefined> {
@@ -385,20 +472,24 @@ class MockStorageService implements IStorageService {
     );
     if (exists) throw new Error("Você já está inscrito neste evento");
 
-    // 3. Validate Time Conflict (Improved Error)
+    // 3. Validate Time Conflict (Robust integer comparison)
     const userEnrollments = await this.getEnrollmentsForUser(userId);
+    const targetDate = session.date;
+    const targetStart = timeToMinutes(session.startTime);
+    const targetEnd = timeToMinutes(session.endTime);
+
     for (const enrollment of userEnrollments) {
       const e = events.find(ev => ev.id === enrollment.eventId);
       if (!e) continue;
       const s = e.sessions.find(ses => ses.id === enrollment.sessionId);
       if (!s) continue;
 
-      if (s.date === session.date) {
-         // Simple overlap check
-         if ((session.startTime >= s.startTime && session.startTime < s.endTime) ||
-             (session.endTime > s.startTime && session.endTime <= s.endTime) ||
-             (session.startTime <= s.startTime && session.endTime >= s.endTime)) { // Covers full overlap
-            
+      if (s.date === targetDate) {
+         const existingStart = timeToMinutes(s.startTime);
+         const existingEnd = timeToMinutes(s.endTime);
+
+         // Overlap condition: StartA < EndB && StartB < EndA
+         if (targetStart < existingEnd && existingStart < targetEnd) {
             // Throw structured error: CONFLICT|EventName|StartTime|EndTime
             throw new Error(`CONFLICT|${e.name}|${s.startTime}|${s.endTime}`);
          }

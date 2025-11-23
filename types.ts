@@ -1,4 +1,5 @@
 
+
 export enum UserRole {
   ADMIN = 'admin',
   USER = 'user'
@@ -64,17 +65,33 @@ export interface Enrollment {
   enrolledAt: string;
 }
 
+// --- Tipos para Paginação ---
+export interface PaginatedResult<T> {
+  data: T[];
+  nextCursor?: any;
+}
+
+export interface PaginatedQueryOptions {
+  limit: number;
+  cursor?: any;
+  filters: Record<string, any>;
+}
+
+
 // --- Interface de Serviço de Armazenamento (Adapter Pattern) ---
 export interface IStorageService {
   // Auth
   login(email: string, password?: string): Promise<User>;
-  loginWithGoogle(): Promise<User>; // Adicionado suporte a Google Auth
+  loginWithGoogle(): Promise<void>;
   logout(): Promise<void>;
   getCurrentUser(): Promise<User | null>;
+  // Novo método para observar mudanças de estado em tempo real (Crucial para Redirects)
+  onAuthStateChanged(callback: (user: User | null) => void): () => void;
+  
   updateUserProfile(uid: string, data: Partial<User>): Promise<User>;
 
   // Admin: User Management
-  getUsers(): Promise<User[]>;
+  getUsers(options: PaginatedQueryOptions): Promise<PaginatedResult<User>>;
   deleteUser(uid: string): Promise<void>;
   updateUserRole(uid: string, role: UserRole): Promise<void>;
 
@@ -90,7 +107,7 @@ export interface IStorageService {
   deleteClass(id: string): Promise<void>;
 
   // Events
-  getEvents(): Promise<SchoolEvent[]>;
+  getEvents(options: PaginatedQueryOptions): Promise<PaginatedResult<SchoolEvent>>;
   getEventById(id: string): Promise<SchoolEvent | undefined>;
   getAvailableEventsForUser(user: User): Promise<SchoolEvent[]>;
   getPublicEvents(): Promise<SchoolEvent[]>;

@@ -1,11 +1,18 @@
+
+
+
+
 import { 
   IStorageService, User, SchoolEvent, Enrollment, 
-  UserRole, Course, ClassGroup, EnrollmentStatus, EventSession 
+  UserRole, Course, ClassGroup, EnrollmentStatus, EventSession,
+  PaginatedQueryOptions, PaginatedResult
 } from '../types';
 import { auth, db } from './firebase';
+import { formatDate, timeToMinutes } from '../utils/formatters';
 import { 
   signInWithEmailAndPassword, 
-  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   signOut, 
   onAuthStateChanged,
@@ -13,7 +20,8 @@ import {
 } from 'firebase/auth';
 import { 
   doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc,
-  collection, getDocs, query, where, writeBatch, runTransaction, Timestamp 
+  collection, getDocs, query, where, writeBatch, runTransaction, Timestamp,
+  limit, startAfter, orderBy, documentId, QueryConstraint
 } from 'firebase/firestore';
 
 export class FirebaseStorageService implements IStorageService {
@@ -35,14 +43,13 @@ export class FirebaseStorageService implements IStorageService {
     }
   }
 
-  async loginWithGoogle(): Promise<User> {
+  async loginWithGoogle(): Promise<void> {
       if (!auth) throw new Error("Serviço de autenticação não inicializado.");
       try {
           const provider = new GoogleAuthProvider();
-          const result = await signInWithPopup(auth, provider);
-          return this._fetchUserProfile(result.user);
+          await signInWithRedirect(auth, provider);
       } catch (error: any) {
-          console.error("Erro no Login Google:", error);
+          console.error("Erro ao iniciar Login com Google:", error);
           throw new Error(this.mapAuthError(error.code));
       }
   }
@@ -102,6 +109,17 @@ export class FirebaseStorageService implements IStorageService {
   async getCurrentUser(): Promise<User | null> {
     if (!auth) return null;
 
+    // Primeiro, verifica se há um resultado de redirecionamento de login pendente.
+    // Isso é útil se chamado manualmente, mas a assinatura do onAuthStateChanged é preferível.
+    try {
+        const result = await getRedirectResult(auth);
+        if (result) {
+            return this._fetchUserProfile(result.user);
+        }
+    } catch (error: any) {
+        console.error("Erro no redirecionamento (getCurrentUser):", error);
+    }
+
     const fbUser = await new Promise<any>((resolve) => {
       const unsubscribe = onAuthStateChanged(auth!, (user) => {
         unsubscribe();
@@ -110,34 +128,32 @@ export class FirebaseStorageService implements IStorageService {
     });
 
     if (!fbUser) return null;
+    return this._fetchUserProfile(fbUser);
+  }
 
-    try {
-        const userDocRef = doc(db!, 'users', fbUser.uid);
-        const userDoc = await getDoc(userDocRef);
+  // IMPLEMENTAÇÃO DO LISTENER DE ESTADO (CORREÇÃO DO BUG DE REDIRECT)
+  onAuthStateChanged(callback: (user: User | null) => void): () => void {
+      if (!auth) return () => {};
 
-        if (userDoc.exists()) {
-        const userData = userDoc.data() as any;
-        return {
-            uid: fbUser.uid,
-            email: fbUser.email || '',
-            name: userData.name || fbUser.displayName,
-            role: userData.role || UserRole.USER,
-            rm: userData.rm,
-            courseId: userData.courseId,
-            classId: userData.classId,
-            isOnboarded: userData.isOnboarded || false
-        };
-        }
-    } catch (e) {
-        console.warn("Perfil incompleto ou erro de rede:", e);
-    }
-
-    return {
-      uid: fbUser.uid,
-      email: fbUser.email || '',
-      role: UserRole.USER,
-      isOnboarded: false
-    };
+      return onAuthStateChanged(auth, async (fbUser) => {
+          if (fbUser) {
+              try {
+                  const user = await this._fetchUserProfile(fbUser);
+                  callback(user);
+              } catch (e) {
+                  console.error("Erro ao carregar perfil no listener:", e);
+                  // Retorna usuário básico em caso de erro para não bloquear o app
+                  callback({
+                      uid: fbUser.uid,
+                      email: fbUser.email || '',
+                      role: UserRole.USER,
+                      isOnboarded: false
+                  });
+              }
+          } else {
+              callback(null);
+          }
+      });
   }
 
   async updateUserProfile(uid: string, data: Partial<User>): Promise<User> {
@@ -181,40 +197,61 @@ export class FirebaseStorageService implements IStorageService {
         throw new Error("Não foi possível salvar seus dados. Verifique sua conexão.");
     }
 
-    const currentUser = await this.getCurrentUser();
-    if (!currentUser) throw new Error("Sessão perdida após atualização.");
-    return currentUser;
+    // Retorna dados atualizados. O listener onAuthStateChanged cuidará de atualizar a UI.
+    return { ...data, uid, email: '', role: UserRole.USER, isOnboarded: true } as User; 
   }
 
-  // --- ADMIN: USER MANAGEMENT ---
+  // --- ADMIN: USER MANAGEMENT (PAGINATED) ---
 
-  async getUsers(): Promise<User[]> {
-      if (!db) return [];
+  async getUsers(options: PaginatedQueryOptions): Promise<PaginatedResult<User>> {
+      if (!db) return { data: [], nextCursor: undefined };
+      
+      const { limit: queryLimit, cursor, filters } = options;
+      const { searchTerm, role, courseId, classId } = filters;
+      
+      const constraints: QueryConstraint[] = [orderBy('email')]; // Must order by a field for pagination
+      
+      // NOTA: O Firestore não suporta busca textual parcial (LIKE). O filtro de `searchTerm`
+      // será aplicado em memória após a busca. Para busca real, use um serviço como Algolia/Typesense.
+      if (role) constraints.push(where('role', '==', role));
+      if (courseId) constraints.push(where('courseId', '==', courseId));
+      if (classId) constraints.push(where('classId', '==', classId));
+      
+      constraints.push(limit(queryLimit));
+      if (cursor) constraints.push(startAfter(cursor));
+      
       try {
-        const querySnapshot = await getDocs(collection(db, 'users'));
-        return querySnapshot.docs.map(doc => {
-            const data = doc.data();
-            return {
-                uid: doc.id,
-                email: data.email || '',
-                name: data.name,
-                role: data.role || UserRole.USER,
-                rm: data.rm,
-                courseId: data.courseId,
-                classId: data.classId,
-                isOnboarded: data.isOnboarded || false
-            } as User;
-        });
+        const q = query(collection(db, 'users'), ...constraints);
+        const querySnapshot = await getDocs(q);
+        
+        let users = querySnapshot.docs.map(doc => ({
+            uid: doc.id,
+            ...doc.data()
+        } as User));
+
+        // Filtro de texto em memória (pós-busca)
+        if (searchTerm) {
+            users = users.filter(u => 
+                u.name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                u.rm?.includes(searchTerm)
+            );
+        }
+
+        const nextCursor = querySnapshot.docs.length === queryLimit ? querySnapshot.docs[querySnapshot.docs.length - 1] : undefined;
+        
+        return { data: users, nextCursor };
       } catch (e: any) {
-          console.error("Erro ao buscar usuários:", e);
-          if (e.code === 'permission-denied') return [];
-          throw new Error("Erro ao carregar lista de usuários.");
+          console.error("Erro ao buscar usuários paginados:", e);
+          if (e.code === 'failed-precondition') {
+              alert("Índice do Firestore ausente. Verifique o console para o link de criação do índice.");
+          }
+          return { data: [], nextCursor: undefined };
       }
   }
 
   async deleteUser(uid: string): Promise<void> {
       if (!db) return;
-      // Note: This only deletes the Firestore document.
       await deleteDoc(doc(db, 'users', uid));
   }
 
@@ -228,13 +265,8 @@ export class FirebaseStorageService implements IStorageService {
 
   async getCourses(): Promise<Course[]> {
       if (!db) return [];
-      try {
-          const qs = await getDocs(collection(db, 'courses'));
-          return qs.docs.map(d => ({ id: d.id, ...d.data() } as Course));
-      } catch (e) {
-          console.error("Erro ao buscar cursos:", e);
-          return [];
-      }
+      const qs = await getDocs(collection(db, 'courses'));
+      return qs.docs.map(d => ({ id: d.id, ...d.data() } as Course));
   }
 
   async addCourse(name: string): Promise<Course> {
@@ -251,34 +283,19 @@ export class FirebaseStorageService implements IStorageService {
   async deleteCourse(id: string): Promise<void> {
       if (!db) return;
       const batch = writeBatch(db);
-      
-      // Delete Course
       const courseRef = doc(db, 'courses', id);
       batch.delete(courseRef);
-
-      // Delete associated classes
       const classesQ = query(collection(db, 'classes'), where("courseId", "==", id));
       const classesSnap = await getDocs(classesQ);
       classesSnap.forEach(doc => batch.delete(doc.ref));
-
       await batch.commit();
   }
 
   async getClasses(courseId?: string): Promise<ClassGroup[]> {
       if (!db) return [];
-      try {
-          let q;
-          if (courseId) {
-              q = query(collection(db, 'classes'), where("courseId", "==", courseId));
-          } else {
-              q = collection(db, 'classes');
-          }
-          const qs = await getDocs(q);
-          return qs.docs.map(d => ({ id: d.id, ...d.data() } as ClassGroup));
-      } catch (e) {
-          console.error("Erro ao buscar turmas", e);
-          return [];
-      }
+      let q = courseId ? query(collection(db, 'classes'), where("courseId", "==", courseId)) : collection(db, 'classes');
+      const qs = await getDocs(q);
+      return qs.docs.map(d => ({ id: d.id, ...d.data() } as ClassGroup));
   }
 
   async addClass(courseId: string, name: string): Promise<ClassGroup> {
@@ -297,62 +314,86 @@ export class FirebaseStorageService implements IStorageService {
       await deleteDoc(doc(db, 'classes', id));
   }
 
-  // --- EVENTS ---
+  // --- EVENTS (PAGINATED) ---
 
-  async getEvents(): Promise<SchoolEvent[]> {
-      if (!db) return [];
+  async getEvents(options: PaginatedQueryOptions): Promise<PaginatedResult<SchoolEvent>> {
+      if (!db) return { data: [], nextCursor: undefined };
+      
+      const { limit: queryLimit, cursor, filters } = options;
+      const { searchTerm, visibility, course } = filters;
+      const classes = await this.getClasses(); // Needed for course filter on classes
+
+      const constraints: QueryConstraint[] = [orderBy('createdAt', 'desc')];
+      
+      if (visibility) constraints.push(where('visibility', '==', visibility));
+      if (course && visibility === 'course') constraints.push(where('allowedCourses', 'array-contains', course));
+      
+      constraints.push(limit(queryLimit));
+      if (cursor) constraints.push(startAfter(cursor));
+      
       try {
-          const qs = await getDocs(collection(db, 'events'));
-          return qs.docs.map(d => this.mapDocToEvent(d));
-      } catch (e) {
-          console.error("Erro ao buscar eventos:", e);
-          return [];
+        const q = query(collection(db, 'events'), ...constraints);
+        const querySnapshot = await getDocs(q);
+        
+        let events = querySnapshot.docs.map(doc => this.mapDocToEvent(doc));
+        
+        // Post-query filtering (text search and complex class filter)
+        if (searchTerm) {
+            events = events.filter(evt => evt.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                                          evt.description.toLowerCase().includes(searchTerm.toLowerCase()));
+        }
+        if (course && visibility === 'class') {
+            events = events.filter(evt => evt.allowedClasses?.some(clsId => {
+                const cls = classes.find(c => c.id === clsId);
+                return cls?.courseId === course;
+            }) || false);
+        }
+
+        const nextCursor = querySnapshot.docs.length === queryLimit ? querySnapshot.docs[querySnapshot.docs.length - 1] : undefined;
+        
+        return { data: events, nextCursor };
+      } catch (e: any) {
+          console.error("Erro ao buscar eventos paginados:", e);
+          if (e.code === 'failed-precondition') alert("Índice do Firestore ausente. Verifique o console.");
+          return { data: [], nextCursor: undefined };
       }
   }
 
   async getEventById(id: string): Promise<SchoolEvent | undefined> {
       if (!db) return undefined;
-      try {
-          const docRef = doc(db, 'events', id);
-          const snap = await getDoc(docRef);
-          if (snap.exists()) {
-              return this.mapDocToEvent(snap);
-          }
-      } catch (e) {
-          console.error("Erro ao buscar evento por ID:", e);
-      }
-      return undefined;
+      const docRef = doc(db, 'events', id);
+      const snap = await getDoc(docRef);
+      return snap.exists() ? this.mapDocToEvent(snap) : undefined;
   }
 
   async getAvailableEventsForUser(user: User): Promise<SchoolEvent[]> {
-      // In Firestore, complex OR queries are limited. 
-      // We fetch all public/relevant events and filter in memory for the MVP.
-      const allEvents = await this.getEvents();
-      
-      return allEvents.filter(event => {
-          if (event.visibility === 'public') return true;
-          if (event.visibility === 'course') {
-              if (!user.courseId) return false;
-              return event.allowedCourses?.includes(user.courseId);
-          }
-          if (event.visibility === 'class') {
-              if (!user.classId) return false;
-              return event.allowedClasses?.includes(user.classId);
-          }
-          return false;
-      });
+      if (!db) return [];
+      // This function fetches all visible events and is used by the student dashboard.
+      // It remains non-paginated for now as the dashboard logic depends on the full list for filtering.
+      // A more scalable dashboard would require a different approach.
+      const eventQueries = [
+          getDocs(query(collection(db, 'events'), where('visibility', '==', 'public')))
+      ];
+      if (user.courseId) {
+          eventQueries.push(getDocs(query(collection(db, 'events'), where('visibility', '==', 'course'), where('allowedCourses', 'array-contains', user.courseId))));
+      }
+      if (user.classId) {
+          eventQueries.push(getDocs(query(collection(db, 'events'), where('visibility', '==', 'class'), where('allowedClasses', 'array-contains', user.classId))));
+      }
+
+      const querySnapshots = await Promise.all(eventQueries);
+      const eventsMap = new Map<string, SchoolEvent>();
+      querySnapshots.forEach(snapshot => snapshot.forEach(doc => {
+          if (!eventsMap.has(doc.id)) eventsMap.set(doc.id, this.mapDocToEvent(doc));
+      }));
+      return Array.from(eventsMap.values());
   }
 
   async getPublicEvents(): Promise<SchoolEvent[]> {
       if (!db) return [];
-      try {
-          const q = query(collection(db, 'events'), where('visibility', '==', 'public'));
-          const qs = await getDocs(q);
-          return qs.docs.map(d => this.mapDocToEvent(d));
-      } catch (e) {
-          console.error("Erro ao buscar eventos públicos:", e);
-          return [];
-      }
+      const q = query(collection(db, 'events'), where('visibility', '==', 'public'));
+      const qs = await getDocs(q);
+      return qs.docs.map(d => this.mapDocToEvent(d));
   }
 
   async createEvent(event: SchoolEvent): Promise<void> {
@@ -364,24 +405,17 @@ export class FirebaseStorageService implements IStorageService {
 
   async updateEvent(updatedEvent: SchoolEvent): Promise<void> {
       if (!db) return;
-      const eventRef = doc(db, 'events', updatedEvent.id);
       const { id, ...data } = updatedEvent;
-      const cleanData = JSON.parse(JSON.stringify(data));
-      await updateDoc(eventRef, cleanData);
+      await updateDoc(doc(db, 'events', id), JSON.parse(JSON.stringify(data)));
   }
 
   async deleteEvent(eventId: string): Promise<void> {
       if (!db) return;
       const batch = writeBatch(db);
-      
-      // Delete the event
       batch.delete(doc(db, 'events', eventId));
-
-      // Delete children
       const childrenQ = query(collection(db, 'events'), where('parentId', '==', eventId));
       const childrenSnap = await getDocs(childrenQ);
       childrenSnap.forEach(c => batch.delete(c.ref));
-
       await batch.commit();
   }
 
@@ -389,18 +423,9 @@ export class FirebaseStorageService implements IStorageService {
 
   async getEnrollmentsForUser(userId: string): Promise<Enrollment[]> {
       if (!db) return [];
-      try {
-          const q = query(
-              collection(db, 'enrollments'), 
-              where('userId', '==', userId), 
-              where('status', '==', EnrollmentStatus.CONFIRMED)
-          );
-          const qs = await getDocs(q);
-          return qs.docs.map(d => ({ id: d.id, ...d.data() } as Enrollment));
-      } catch (e) {
-          console.error("Erro ao buscar inscrições:", e);
-          return [];
-      }
+      const q = query(collection(db, 'enrollments'), where('userId', '==', userId), where('status', '==', EnrollmentStatus.CONFIRMED));
+      const qs = await getDocs(q);
+      return qs.docs.map(d => ({ id: d.id, ...d.data() } as Enrollment));
   }
 
   async getUserEnrollmentsDetails(userId: string): Promise<any[]> {
@@ -412,11 +437,8 @@ export class FirebaseStorageService implements IStorageService {
               const session = event.sessions.find(s => s.id === enr.sessionId);
               if (session) {
                   details.push({
-                    enrollmentId: enr.id,
-                    eventName: event.name,
-                    eventLocation: event.location,
-                    sessionDate: session.date,
-                    sessionTime: `${session.startTime} - ${session.endTime}`,
+                    enrollmentId: enr.id, eventName: event.name, eventLocation: event.location,
+                    sessionDate: session.date, sessionTime: `${session.startTime} - ${session.endTime}`,
                     enrolledAt: enr.enrolledAt
                   });
               }
@@ -427,53 +449,50 @@ export class FirebaseStorageService implements IStorageService {
 
   async getEnrichedEnrollments(eventId: string): Promise<any[]> {
       if (!db) return [];
-      const q = query(collection(db, 'enrollments'), where('eventId', '==', eventId), where('status', '==', EnrollmentStatus.CONFIRMED));
-      const enrSnap = await getDocs(q);
       
+      // 1. Fetch event and enrollments
       const event = await this.getEventById(eventId);
       if (!event) return [];
 
+      const q = query(collection(db, 'enrollments'), where('eventId', '==', eventId), where('status', '==', EnrollmentStatus.CONFIRMED));
+      const enrSnap = await getDocs(q);
       const enrollments = enrSnap.docs.map(d => ({ id: d.id, ...d.data() } as Enrollment));
-      
-      const enriched = [];
-      for (const enr of enrollments) {
-          const userRef = doc(db, 'users', enr.userId);
-          const userSnap = await getDoc(userRef);
-          const userData = userSnap.exists() ? userSnap.data() : {};
+      if (enrollments.length === 0) return [];
 
+      // 2. Batch-fetch user data (N+1 Query Fix)
+      const userIds = [...new Set(enrollments.map(e => e.userId))];
+      const usersMap = new Map<string, User>();
+
+      // Firestore 'in' query supports max 30 elements. Chunk if needed.
+      const MAX_IN_QUERIES = 30;
+      for (let i = 0; i < userIds.length; i += MAX_IN_QUERIES) {
+          const chunk = userIds.slice(i, i + MAX_IN_QUERIES);
+          const usersQuery = query(collection(db, 'users'), where(documentId(), 'in', chunk));
+          const usersSnap = await getDocs(usersQuery);
+          usersSnap.forEach(doc => usersMap.set(doc.id, { uid: doc.id, ...doc.data() } as User));
+      }
+
+      // 3. Join data in memory
+      return enrollments.map(enr => {
+          // FIX: Provide a type for the user object to prevent type errors when falling back to an empty object.
+          const user: Partial<User> = usersMap.get(enr.userId) || {};
           const session = event.sessions.find(s => s.id === enr.sessionId);
-
-          enriched.push({
+          return {
               id: enr.id,
-              user: {
-                  uid: enr.userId,
-                  name: userData.name || 'Desconhecido',
-                  email: userData.email || '',
-                  rm: userData.rm || ''
-              },
-              session: {
-                  id: session?.id,
-                  date: session?.date,
-                  startTime: session?.startTime,
-                  endTime: session?.endTime
-              },
+              user: { uid: enr.userId, name: user.name || 'Desconhecido', email: user.email || '', rm: user.rm || '' },
+              session: { id: session?.id, date: session?.date, startTime: session?.startTime, endTime: session?.endTime },
               status: enr.status,
               enrolledAt: enr.enrolledAt
-          });
-      }
-      return enriched;
+          };
+      });
   }
 
   async getEnrollmentDetailsForEvent(eventId: string): Promise<any[]> {
       const enriched = await this.getEnrichedEnrollments(eventId);
       return enriched.map(item => ({
-          Nome: item.user.name,
-          Email: item.user.email,
-          RM: item.user.rm,
-          SessaoData: item.session.date,
-          SessaoHora: item.session.startTime,
-          Status: item.status,
-          DataInscricao: new Date(item.enrolledAt).toLocaleString('pt-BR')
+          Nome: item.user.name, Email: item.user.email, RM: item.user.rm,
+          SessaoData: item.session.date, SessaoHora: item.session.startTime,
+          Status: item.status, DataInscricao: new Date(item.enrolledAt).toLocaleString('pt-BR')
       }));
   }
 
@@ -481,171 +500,93 @@ export class FirebaseStorageService implements IStorageService {
   async createEnrollment(userId: string, eventId: string, sessionId: string): Promise<Enrollment> {
       if (!db) throw new Error("Banco de dados não inicializado.");
 
-      // 1. Pre-check: Time Conflict (Read Only)
-      const userEnrollments = await this.getEnrollmentsForUser(userId);
-      const eventTarget = await this.getEventById(eventId);
+      // A checagem de conflito é feita ANTES da transação. Para 100% de robustez, usar Cloud Functions.
+      const [userEnrollments, eventTarget] = await Promise.all([this.getEnrollmentsForUser(userId), this.getEventById(eventId)]);
       if (!eventTarget) throw new Error("Evento não encontrado.");
       
       const sessionTarget = eventTarget.sessions.find(s => s.id === sessionId);
       if (!sessionTarget) throw new Error("Sessão não encontrada.");
 
+      const targetStart = timeToMinutes(sessionTarget.startTime), targetEnd = timeToMinutes(sessionTarget.endTime);
+
       for (const enr of userEnrollments) {
+          if (enr.eventId === eventId) throw new Error("Você já está inscrito neste evento.");
           const existingEvent = await this.getEventById(enr.eventId);
           if (!existingEvent) continue;
           const existingSession = existingEvent.sessions.find(s => s.id === enr.sessionId);
-          if (!existingSession) continue;
-
-          if (existingSession.date === sessionTarget.date) {
-               if ((sessionTarget.startTime >= existingSession.startTime && sessionTarget.startTime < existingSession.endTime) ||
-                   (sessionTarget.endTime > existingSession.startTime && sessionTarget.endTime <= existingSession.endTime) ||
-                   (sessionTarget.startTime <= existingSession.startTime && sessionTarget.endTime >= existingSession.endTime)) {
+          if (existingSession?.date === sessionTarget.date) {
+               const existingStart = timeToMinutes(existingSession.startTime), existingEnd = timeToMinutes(existingSession.endTime);
+               if (targetStart < existingEnd && existingStart < targetEnd) {
                     throw new Error(`CONFLICT|${existingEvent.name}|${existingSession.startTime}|${existingSession.endTime}`);
                }
           }
       }
 
-      // 2. Run Transaction
-      const enrollmentId = `${userId}_${eventId}`;
-      const enrollmentRef = doc(db, 'enrollments', enrollmentId);
-      const eventRef = doc(db, 'events', eventId);
+      const enrollmentId = `${userId}_${eventId}`; // Prevents duplicate enrollment docs
+      const enrollmentRef = doc(db, 'enrollments', enrollmentId), eventRef = doc(db, 'events', eventId);
 
-      try {
-          await runTransaction(db, async (transaction) => {
-            const enrDoc = await transaction.get(enrollmentRef);
-            if (enrDoc.exists() && enrDoc.data().status === EnrollmentStatus.CONFIRMED) {
-                throw new Error("Você já está inscrito neste evento.");
-            }
+      await runTransaction(db, async (t) => {
+          const [enrDoc, eventDoc] = await Promise.all([t.get(enrollmentRef), t.get(eventRef)]);
+          if (enrDoc.exists() && enrDoc.data().status === EnrollmentStatus.CONFIRMED) throw new Error("Você já está inscrito neste evento.");
+          if (!eventDoc.exists()) throw new Error("Evento não existe mais.");
 
-            const eventDoc = await transaction.get(eventRef);
-            if (!eventDoc.exists()) throw new Error("Evento não existe mais.");
+          const eventData = eventDoc.data() as SchoolEvent;
+          const sessionIndex = eventData.sessions.findIndex(s => s.id === sessionId);
+          if (sessionIndex === -1) throw new Error("Sessão inválida.");
+          if (eventData.sessions[sessionIndex].filled >= eventData.sessions[sessionIndex].capacity) throw new Error("Esta sessão atingiu a capacidade máxima.");
 
-            const eventData = eventDoc.data() as SchoolEvent;
-            const sessionIndex = eventData.sessions.findIndex(s => s.id === sessionId);
-            if (sessionIndex === -1) throw new Error("Sessão inválida.");
-
-            const session = eventData.sessions[sessionIndex];
-            if (session.filled >= session.capacity) {
-                throw new Error("Esta sessão atingiu a capacidade máxima.");
-            }
-
-            const newSessions = [...eventData.sessions];
-            newSessions[sessionIndex].filled += 1;
-            transaction.update(eventRef, { sessions: newSessions });
-
-            transaction.set(enrollmentRef, {
-                userId,
-                eventId,
-                sessionId,
-                status: EnrollmentStatus.CONFIRMED,
-                enrolledAt: new Date().toISOString()
-            });
-        });
-      } catch (e: any) {
-          // Se o erro já for uma mensagem nossa, repassa.
-          if (e.message.includes("sessão atingiu") || e.message.includes("já está inscrito")) throw e;
+          const newSessions = [...eventData.sessions];
+          newSessions[sessionIndex] = { ...newSessions[sessionIndex], filled: newSessions[sessionIndex].filled + 1 };
           
-          // Tratamento específico para erros de permissão do Firebase
-          if (e.code === 'permission-denied' || e.message.includes("Missing or insufficient permissions")) {
-             console.error("Erro de Permissão (Firestore):", e);
-             throw new Error("Erro de permissão: As regras do Firestore bloquearam a ação. Certifique-se de copiar o conteúdo de 'firestore.rules' para o Firebase Console > Firestore Database > Rules.");
-          }
+          t.update(eventRef, { sessions: newSessions });
+          t.set(enrollmentRef, {
+              userId, eventId, sessionId, status: EnrollmentStatus.CONFIRMED,
+              enrolledAt: new Date().toISOString()
+          });
+      });
 
-          console.error("Erro na transação de inscrição:", e);
-          throw new Error("Erro ao processar inscrição. Tente novamente.");
-      }
-
-      return {
-          id: enrollmentId,
-          userId,
-          eventId,
-          sessionId,
-          status: EnrollmentStatus.CONFIRMED,
-          enrolledAt: new Date().toISOString()
-      };
+      return { id: enrollmentId, userId, eventId, sessionId, status: EnrollmentStatus.CONFIRMED, enrolledAt: new Date().toISOString() };
   }
 
   async cancelEnrollment(enrollmentId: string): Promise<void> {
       if (!db) return;
-
       const enrollmentRef = doc(db, 'enrollments', enrollmentId);
       
-      await runTransaction(db, async (transaction) => {
-          const enrDoc = await transaction.get(enrollmentRef);
-          if (!enrDoc.exists()) throw new Error("Inscrição não encontrada.");
+      await runTransaction(db, async (t) => {
+          const enrDoc = await t.get(enrollmentRef);
+          if (!enrDoc.exists()) return;
           
-          const enrData = enrDoc.data() as Enrollment;
-          const eventRef = doc(db, 'events', enrData.eventId);
-          const eventDoc = await transaction.get(eventRef);
+          const { eventId, sessionId } = enrDoc.data() as Enrollment;
+          const eventRef = doc(db, 'events', eventId);
+          const eventDoc = await t.get(eventRef);
 
           if (eventDoc.exists()) {
               const eventData = eventDoc.data() as SchoolEvent;
-              const sessionIndex = eventData.sessions.findIndex(s => s.id === enrData.sessionId);
-              
-              if (sessionIndex !== -1) {
+              const sessionIndex = eventData.sessions.findIndex(s => s.id === sessionId);
+              if (sessionIndex !== -1 && eventData.sessions[sessionIndex].filled > 0) {
                   const newSessions = [...eventData.sessions];
-                  newSessions[sessionIndex].filled = Math.max(0, newSessions[sessionIndex].filled - 1);
-                  transaction.update(eventRef, { sessions: newSessions });
+                  newSessions[sessionIndex] = { ...newSessions[sessionIndex], filled: newSessions[sessionIndex].filled - 1 };
+                  t.update(eventRef, { sessions: newSessions });
               }
           }
-
-          transaction.delete(enrollmentRef); 
+          t.delete(enrollmentRef); 
       });
   }
 
   async resetAndSeedData(): Promise<void> {
-      console.warn("Seed disabled in Firebase.");
       alert("A função de RESET está desabilitada no modo Firebase por segurança.");
   }
 
-  // --- Helpers ---
+  private mapDocToEvent = (doc: any): SchoolEvent => ({ id: doc.id, ...doc.data() } as SchoolEvent);
 
-  private mapDocToEvent(doc: any): SchoolEvent {
-      const data = doc.data();
-      return {
-          id: doc.id,
-          name: data.name,
-          description: data.description,
-          location: data.location,
-          visibility: data.visibility,
-          allowedCourses: data.allowedCourses,
-          allowedClasses: data.allowedClasses,
-          parentId: data.parentId,
-          createdBy: data.createdBy,
-          createdAt: data.createdAt,
-          sessions: data.sessions || []
-      } as SchoolEvent;
-  }
-
-  private mapAuthError(code: string): string {
-    switch (code) {
-      case 'auth/invalid-credential': 
-      case 'auth/user-not-found':
-      case 'auth/wrong-password':
-          return 'Email ou senha incorretos. Verifique seus dados.';
-      case 'auth/invalid-email': 
-          return 'O formato do email é inválido.';
-      case 'auth/user-disabled': 
-          return 'Esta conta foi desativada pelo administrador.';
-      case 'auth/email-already-in-use': 
-          return 'Já existe uma conta cadastrada com este email.';
-      case 'auth/too-many-requests': 
-          return 'Muitas tentativas falhas consecutivas. Aguarde alguns minutos e tente novamente.';
-      case 'auth/network-request-failed': 
-          return 'Erro de conexão. Verifique sua internet.';
-      case 'auth/popup-closed-by-user':
-          return 'O login foi cancelado antes da conclusão.';
-      case 'auth/popup-blocked':
-          return 'O navegador bloqueou a janela de login. Permita pop-ups para este site.';
-      case 'auth/operation-not-allowed':
-          return 'Este método de login não está habilitado.';
-      case 'auth/unauthorized-domain':
-          return 'O domínio atual não está autorizado no Firebase. Adicione-o em Authentication > Settings > Authorized Domains no Console.';
-      case 'permission-denied': 
-          return 'Você não tem permissão para realizar esta ação.';
-      case 'unavailable':
-          return 'O serviço está temporariamente indisponível. Tente mais tarde.';
-      default: 
-          return `Ocorreu um erro inesperado (${code}). Tente novamente.`;
-    }
-  }
+  private mapAuthError = (code: string): string => ({
+      'auth/invalid-credential': 'Email ou senha incorretos.', 'auth/user-not-found': 'Email ou senha incorretos.',
+      'auth/wrong-password': 'Email ou senha incorretos.', 'auth/invalid-email': 'O formato do email é inválido.',
+      'auth/user-disabled': 'Esta conta foi desativada.', 'auth/email-already-in-use': 'Email já cadastrado.',
+      'auth/too-many-requests': 'Muitas tentativas. Tente novamente mais tarde.',
+      'auth/network-request-failed': 'Erro de conexão.', 'auth/popup-closed-by-user': 'Login cancelado.',
+      'auth/popup-blocked': 'O navegador bloqueou a janela de login.', 'auth/operation-not-allowed': 'Método de login desabilitado.',
+      'auth/unauthorized-domain': 'Domínio não autorizado.', 'permission-denied': 'Permissão negada.',
+      'unavailable': 'Serviço indisponível. Tente mais tarde.'
+  }[code] || `Erro inesperado (${code}).`);
 }

@@ -2,7 +2,6 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { User, UserRole, Course, ClassGroup } from '../types';
 import { storageService } from '../services/storage';
 import { Modal } from '../components/Modal';
-import { Pagination } from '../components/Pagination';
 import { formatDate } from '../utils/formatters';
 
 // --- Desktop Row Component ---
@@ -129,16 +128,21 @@ export const AdminUsers: React.FC = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [classes, setClasses] = useState<ClassGroup[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMeta, setLoadingMeta] = useState(true);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
+  const [cursors, setCursors] = useState<any[]>([undefined]); // Cursors for each page start
+  const [hasNextPage, setHasNextPage] = useState(true);
   const ITEMS_PER_PAGE = 15;
 
   // Filters
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterRole, setFilterRole] = useState<string>('');
-  const [filterCourse, setFilterCourse] = useState<string>('');
-  const [filterClass, setFilterClass] = useState<string>('');
+  const [filters, setFilters] = useState({
+    searchTerm: '',
+    role: '',
+    courseId: '',
+    classId: ''
+  });
 
   // Edit State
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -153,51 +157,67 @@ export const AdminUsers: React.FC = () => {
   // Action Confirmation State
   const [pendingAction, setPendingAction] = useState<{type: 'DELETE' | 'ROLE', user: User} | null>(null);
 
-  const loadData = async () => {
-      setLoading(true);
-      const [u, c, t] = await Promise.all([
-          storageService.getUsers(),
+  const fetchUsers = useCallback(async (page: number) => {
+    setLoading(true);
+    const cursor = cursors[page - 1];
+    const { data, nextCursor } = await storageService.getUsers({
+        limit: ITEMS_PER_PAGE,
+        cursor: cursor,
+        filters: filters
+    });
+    setUsers(data);
+    setHasNextPage(!!nextCursor);
+    if (nextCursor && cursors.length <= page) {
+        setCursors(prev => [...prev, nextCursor]);
+    }
+    setLoading(false);
+  }, [cursors, filters]);
+  
+  const loadMeta = async () => {
+      setLoadingMeta(true);
+      const [c, t] = await Promise.all([
           storageService.getCourses(),
           storageService.getClasses()
       ]);
-      setUsers(u);
       setCourses(c);
       setClasses(t);
-      setLoading(false);
+      setLoadingMeta(false);
   };
 
   useEffect(() => {
-      loadData();
+    loadMeta();
   }, []);
+  
+  useEffect(() => {
+    // Reset and fetch when filters change
+    setCursors([undefined]);
+    setCurrentPage(1);
+    fetchUsers(1);
+  }, [filters]);
 
-  // Filter and Paginate Logic
-  const filteredUsers = useMemo(() => {
-      return users.filter(u => {
-          // 1. Text Search
-          const matchesText = 
-            u.name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-            u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            u.rm?.includes(searchTerm);
+  const handleNextPage = () => {
+      if (!hasNextPage) return;
+      const nextPage = currentPage + 1;
+      setCurrentPage(nextPage);
+      fetchUsers(nextPage);
+  };
 
-          // 2. Role Filter
-          const matchesRole = filterRole ? u.role === filterRole : true;
+  const handlePrevPage = () => {
+      if (currentPage === 1) return;
+      const prevPage = currentPage - 1;
+      setCurrentPage(prevPage);
+      fetchUsers(prevPage);
+  };
 
-          // 3. Course Filter
-          const matchesCourse = filterCourse ? u.courseId === filterCourse : true;
+  const handleFilterChange = (key: string, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
 
-          // 4. Class Filter
-          const matchesClass = filterClass ? u.classId === filterClass : true;
-
-          return matchesText && matchesRole && matchesCourse && matchesClass;
-      });
-  }, [users, searchTerm, filterRole, filterCourse, filterClass]);
-
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, filterRole, filterCourse, filterClass]);
-
-  const paginatedUsers = useMemo(() => {
-      const start = (currentPage - 1) * ITEMS_PER_PAGE;
-      return filteredUsers.slice(start, start + ITEMS_PER_PAGE);
-  }, [filteredUsers, currentPage]);
+  const resetData = () => {
+      setCurrentPage(1);
+      setCursors([undefined]);
+      fetchUsers(1);
+  };
 
   // Callbacks
   const requestDelete = useCallback((user: User) => setPendingAction({ type: 'DELETE', user }), []);
@@ -219,86 +239,65 @@ export const AdminUsers: React.FC = () => {
       try {
           const details = await storageService.getUserEnrollmentsDetails(user.uid);
           setUserEnrollments(details);
-      } catch (e) {
-          console.error(e);
-          setUserEnrollments([]);
-      } finally {
-          setLoadingEnrollments(false);
-      }
+      } catch (e) { console.error(e); setUserEnrollments([]); } 
+      finally { setLoadingEnrollments(false); }
   }, []);
 
   const handleRemoveEnrollment = async (enrollmentId: string) => {
       if (!viewingEnrollmentsUser) return;
-      try {
-          await storageService.cancelEnrollment(enrollmentId);
-          // Refresh list
-          handleViewEnrollments(viewingEnrollmentsUser);
-      } catch (e) {
-          alert("Erro ao remover inscrição");
-      }
+      await storageService.cancelEnrollment(enrollmentId);
+      handleViewEnrollments(viewingEnrollmentsUser);
   };
 
   const confirmAction = async () => {
       if (!pendingAction) return;
-
       if (pendingAction.type === 'DELETE') {
           await storageService.deleteUser(pendingAction.user.uid);
       } else if (pendingAction.type === 'ROLE') {
           const newRole = pendingAction.user.role === UserRole.ADMIN ? UserRole.USER : UserRole.ADMIN;
           await storageService.updateUserRole(pendingAction.user.uid, newRole);
       }
-
       setPendingAction(null);
-      loadData();
+      resetData();
   };
 
   const saveEdit = async (e: React.FormEvent) => {
       e.preventDefault();
       if (!editingUser) return;
       setEditError(null);
-
       try {
           await storageService.updateUserProfile(editingUser.uid, editForm);
           setEditingUser(null);
-          loadData();
-      } catch (err: any) {
-          setEditError(err.message);
-      }
+          resetData();
+      } catch (err: any) { setEditError(err.message); }
   };
 
   const getCourseName = useCallback((id?: string) => courses.find(c => c.id === id)?.name || '-', [courses]);
   const getClassName = useCallback((id?: string) => classes.find(c => c.id === id)?.name || '-', [classes]);
 
-  // Available classes based on selected course filter
   const availableClassesForFilter = useMemo(() => {
-      if (!filterCourse) return [];
-      return classes.filter(c => c.courseId === filterCourse);
-  }, [classes, filterCourse]);
+      if (!filters.courseId) return [];
+      return classes.filter(c => c.courseId === filters.courseId);
+  }, [classes, filters.courseId]);
 
   return (
       <div className="space-y-6">
           <div className="flex flex-col justify-between gap-4">
               <h1 className="text-2xl font-bold text-gray-900">Gerenciamento de Usuários</h1>
               
-              {/* Filters Area */}
               <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex flex-col md:flex-row gap-4">
                   <div className="flex-1">
                       <label className="block text-xs font-medium text-gray-500 mb-1">Buscar</label>
                       <input 
-                        type="text" 
-                        placeholder="Nome, Email ou RM..." 
-                        className="w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-white text-gray-900"
-                        value={searchTerm}
-                        onChange={e => setSearchTerm(e.target.value)}
+                        type="text" placeholder="Nome, Email ou RM..."
+                        className="w-full border-gray-300 rounded-md shadow-sm bg-white text-gray-900"
+                        value={filters.searchTerm} onChange={e => handleFilterChange('searchTerm', e.target.value)}
                       />
                   </div>
                   <div className="w-full md:w-40">
                       <label className="block text-xs font-medium text-gray-500 mb-1">Perfil</label>
-                      <select 
-                        className="w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-white text-gray-900"
-                        value={filterRole}
-                        onChange={e => setFilterRole(e.target.value)}
-                      >
+                      <select className="w-full border-gray-300 rounded-md shadow-sm bg-white text-gray-900"
+                        value={filters.role} onChange={e => handleFilterChange('role', e.target.value)}>
                           <option value="">Todos</option>
                           <option value={UserRole.ADMIN}>Admin</option>
                           <option value={UserRole.USER}>User</option>
@@ -306,118 +305,78 @@ export const AdminUsers: React.FC = () => {
                   </div>
                   <div className="w-full md:w-48">
                       <label className="block text-xs font-medium text-gray-500 mb-1">Curso</label>
-                      <select 
-                        className="w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-white text-gray-900"
-                        value={filterCourse}
-                        onChange={e => { setFilterCourse(e.target.value); setFilterClass(''); }}
-                      >
+                      <select className="w-full border-gray-300 rounded-md shadow-sm bg-white text-gray-900"
+                        value={filters.courseId} onChange={e => { setFilters({...filters, courseId: e.target.value, classId: ''}); }}>
                           <option value="">Todos os Cursos</option>
                           {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                   </div>
                   <div className="w-full md:w-48">
                       <label className="block text-xs font-medium text-gray-500 mb-1">Turma</label>
-                      <select 
-                        className="w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-white text-gray-900 disabled:bg-gray-100"
-                        value={filterClass}
-                        onChange={e => setFilterClass(e.target.value)}
-                        disabled={!filterCourse}
-                      >
+                      <select className="w-full border-gray-300 rounded-md shadow-sm bg-white text-gray-900 disabled:bg-gray-100"
+                        value={filters.classId} onChange={e => handleFilterChange('classId', e.target.value)} disabled={!filters.courseId}>
                           <option value="">Todas as Turmas</option>
                           {availableClassesForFilter.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                   </div>
               </div>
           </div>
-
-          {/* Desktop Table */}
-          <div className="hidden md:block bg-white shadow overflow-hidden sm:rounded-lg">
-              <table className="min-w-full divide-y divide-gray-200">
+          
+          <div className="bg-white shadow overflow-x-auto sm:rounded-lg">
+              {/* Desktop Table */}
+              <table className="min-w-full divide-y divide-gray-200 hidden md:table">
                   <thead className="bg-gray-50">
                       <tr>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuário</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Curso / Turma</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">RM</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Usuário</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Curso/Turma</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">RM</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Ações</th>
                       </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                      {paginatedUsers.map(user => (
-                          <UserTableRow 
-                            key={user.uid} 
-                            user={user} 
-                            courseName={getCourseName(user.courseId)} 
-                            className={getClassName(user.classId)}
-                            onEdit={handleEdit}
-                            onRequestRoleChange={requestRoleChange}
-                            onRequestDelete={requestDelete}
-                            onViewEnrollments={handleViewEnrollments}
-                          />
+                      {loading && <tr><td colSpan={5} className="p-8 text-center text-gray-500">Carregando...</td></tr>}
+                      {!loading && users.map(user => (
+                          <UserTableRow key={user.uid} user={user} 
+                            courseName={getCourseName(user.courseId)} className={getClassName(user.classId)}
+                            onEdit={handleEdit} onRequestRoleChange={requestRoleChange}
+                            onRequestDelete={requestDelete} onViewEnrollments={handleViewEnrollments} />
                       ))}
-                      {paginatedUsers.length === 0 && (
-                          <tr>
-                              <td colSpan={5} className="px-6 py-4 text-center text-gray-500 text-sm">
-                                  Nenhum usuário encontrado com os filtros atuais.
-                              </td>
-                          </tr>
+                      {!loading && users.length === 0 && (
+                          <tr><td colSpan={5} className="p-8 text-center text-gray-500">Nenhum usuário encontrado.</td></tr>
                       )}
                   </tbody>
               </table>
+              {/* Mobile Card View */}
+              <div className="md:hidden p-4 space-y-4">
+                  {loading && <div className="p-8 text-center text-gray-500">Carregando...</div>}
+                  {!loading && users.map(user => (
+                      <UserMobileCard key={user.uid} user={user}
+                        courseName={getCourseName(user.courseId)} className={getClassName(user.classId)}
+                        onEdit={handleEdit} onRequestRoleChange={requestRoleChange}
+                        onRequestDelete={requestDelete} onViewEnrollments={handleViewEnrollments}/>
+                  ))}
+                  {!loading && users.length === 0 && <div className="p-8 text-center text-gray-500">Nenhum usuário encontrado.</div>}
+              </div>
           </div>
 
-          {/* Mobile Card View */}
-          <div className="md:hidden space-y-4">
-              {paginatedUsers.map(user => (
-                  <UserMobileCard 
-                    key={user.uid} 
-                    user={user} 
-                    courseName={getCourseName(user.courseId)} 
-                    className={getClassName(user.classId)}
-                    onEdit={handleEdit}
-                    onRequestRoleChange={requestRoleChange}
-                    onRequestDelete={requestDelete}
-                    onViewEnrollments={handleViewEnrollments}
-                  />
-              ))}
-              {paginatedUsers.length === 0 && (
-                  <div className="text-center text-gray-500 text-sm py-8">
-                      Nenhum usuário encontrado.
-                  </div>
-              )}
+          <div className="flex justify-between items-center mt-4">
+            <button onClick={handlePrevPage} disabled={currentPage === 1 || loading} className="px-4 py-2 bg-white border rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">Anterior</button>
+            <span className="text-sm text-gray-500">Página {currentPage}</span>
+            <button onClick={handleNextPage} disabled={!hasNextPage || loading} className="px-4 py-2 bg-white border rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">Próximo</button>
           </div>
-
-          <Pagination 
-            currentPage={currentPage}
-            totalItems={filteredUsers.length}
-            itemsPerPage={ITEMS_PER_PAGE}
-            onPageChange={setCurrentPage}
-          />
-
-          {/* Modals (Confirm & Edit & Enrollments) */}
+          
           <Modal isOpen={!!pendingAction} onClose={() => setPendingAction(null)} title="Confirmar Ação">
-              <div className="space-y-4">
+             <div className="space-y-4">
                   {pendingAction?.type === 'DELETE' ? (
-                      <p className="text-gray-700">
-                          Tem certeza que deseja excluir o usuário <strong>{pendingAction.user.name || pendingAction.user.email}</strong>?
-                          <br/>
-                          <span className="text-red-500 text-sm font-bold mt-2 block">Esta ação excluirá todas as inscrições associadas e não pode ser desfeita.</span>
-                      </p>
+                      <p>Tem certeza que deseja excluir <strong>{pendingAction.user.name}</strong>?</p>
                   ) : (
-                      <p className="text-gray-700">
-                          Deseja alterar o nível de acesso de <strong>{pendingAction?.user.name}</strong> para 
-                          <strong> {pendingAction?.user.role === UserRole.ADMIN ? 'USUÁRIO COMUM' : 'ADMINISTRADOR'}</strong>?
-                      </p>
+                      <p>Deseja alterar o perfil de <strong>{pendingAction?.user.name}</strong> para 
+                          <strong> {pendingAction?.user.role === UserRole.ADMIN ? 'USUÁRIO' : 'ADMIN'}</strong>?</p>
                   )}
-
                   <div className="flex justify-end gap-3 mt-6">
-                      <button onClick={() => setPendingAction(null)} className="px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 text-gray-800">Cancelar</button>
-                      <button 
-                          onClick={confirmAction} 
-                          className={`px-4 py-2 rounded text-white font-bold ${pendingAction?.type === 'DELETE' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-500 hover:bg-amber-600'}`}
-                      >
-                          Confirmar
-                      </button>
+                      <button onClick={() => setPendingAction(null)} className="px-4 py-2 bg-gray-100 rounded">Cancelar</button>
+                      <button onClick={confirmAction} className="px-4 py-2 rounded text-white font-bold bg-red-600">Confirmar</button>
                   </div>
               </div>
           </Modal>
@@ -425,91 +384,59 @@ export const AdminUsers: React.FC = () => {
           <Modal isOpen={!!editingUser} onClose={() => setEditingUser(null)} title="Editar Usuário">
               <form onSubmit={saveEdit} className="space-y-4">
                   <div>
-                      <label className="block text-sm font-medium text-gray-700">Nome Completo</label>
-                      <input 
-                          type="text" 
-                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-primary focus:border-primary bg-white text-gray-900"
-                          value={editForm.name}
-                          onChange={e => setEditForm({...editForm, name: e.target.value})}
-                          required
-                      />
+                      <label>Nome Completo</label>
+                      <input type="text" className="mt-1 w-full border rounded-md p-2 bg-white text-gray-900"
+                          value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} required/>
                   </div>
                   <div>
-                      <label className="block text-sm font-medium text-gray-700">RM</label>
-                      <input 
-                          type="text" 
-                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-primary focus:border-primary bg-white text-gray-900"
-                          value={editForm.rm}
-                          onChange={e => setEditForm({...editForm, rm: e.target.value})}
-                      />
+                      <label>RM</label>
+                      <input type="text" className="mt-1 w-full border rounded-md p-2 bg-white text-gray-900"
+                          value={editForm.rm} onChange={e => setEditForm({...editForm, rm: e.target.value})}/>
                   </div>
                   <div>
-                      <label className="block text-sm font-medium text-gray-700">Curso</label>
-                      <select 
-                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900"
-                          value={editForm.courseId}
-                          onChange={e => setEditForm({...editForm, courseId: e.target.value, classId: ''})}
-                      >
+                      <label>Curso</label>
+                      <select className="mt-1 w-full border rounded-md p-2 bg-white text-gray-900"
+                          value={editForm.courseId} onChange={e => setEditForm({...editForm, courseId: e.target.value, classId: ''})}>
                           <option value="">Selecione...</option>
                           {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                   </div>
                   <div>
-                      <label className="block text-sm font-medium text-gray-700">Turma</label>
-                      <select 
-                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900"
-                          value={editForm.classId}
-                          onChange={e => setEditForm({...editForm, classId: e.target.value})}
-                          disabled={!editForm.courseId}
-                      >
+                      <label>Turma</label>
+                      <select className="mt-1 w-full border rounded-md p-2 bg-white text-gray-900"
+                          value={editForm.classId} onChange={e => setEditForm({...editForm, classId: e.target.value})} disabled={!editForm.courseId}>
                           <option value="">Selecione...</option>
                           {classes.filter(c => c.courseId === editForm.courseId).map(c => (
                               <option key={c.id} value={c.id}>{c.name}</option>
                           ))}
                       </select>
                   </div>
-
                   {editError && <div className="text-red-600 text-sm p-2 bg-red-50 rounded">{editError}</div>}
-
-                  <button type="submit" className="w-full bg-primary text-white py-2 rounded font-bold hover:bg-indigo-700">
-                      Salvar Alterações
-                  </button>
+                  <button type="submit" className="w-full bg-primary text-white py-2 rounded font-bold">Salvar</button>
               </form>
           </Modal>
 
-          <Modal isOpen={!!viewingEnrollmentsUser} onClose={() => setViewingEnrollmentsUser(null)} title={`Agenda: ${viewingEnrollmentsUser?.name || 'Usuário'}`}>
+          <Modal isOpen={!!viewingEnrollmentsUser} onClose={() => setViewingEnrollmentsUser(null)} title={`Agenda: ${viewingEnrollmentsUser?.name}`}>
                 <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-                    {loadingEnrollments ? (
-                        <div className="text-center py-8 text-gray-500">Carregando inscrições...</div>
+                    {loadingEnrollments ? ( <div className="text-center py-8">Carregando...</div>
                     ) : userEnrollments.length === 0 ? (
-                        <div className="text-center py-8 text-gray-500 bg-gray-50 rounded border border-dashed">
-                            Este usuário não está inscrito em nenhum evento.
-                        </div>
+                        <div className="text-center py-8 bg-gray-50 rounded">Nenhuma inscrição.</div>
                     ) : (
                         <ul className="divide-y divide-gray-200">
                             {userEnrollments.map((enr, idx) => (
                                 <li key={idx} className="py-3 flex justify-between items-center">
                                     <div>
-                                        <div className="font-bold text-gray-800 text-sm">{enr.eventName}</div>
+                                        <div className="font-bold text-sm">{enr.eventName}</div>
                                         <div className="text-xs text-gray-500">
                                             📅 {formatDate(enr.sessionDate)} • ⏰ {enr.sessionTime}
                                         </div>
-                                        <div className="text-xs text-gray-400">📍 {enr.eventLocation}</div>
                                     </div>
-                                    <button 
-                                        onClick={() => handleRemoveEnrollment(enr.enrollmentId)}
-                                        className="text-red-500 hover:text-red-700 text-xs font-bold border border-red-200 px-2 py-1 rounded hover:bg-red-50"
-                                    >
-                                        Remover
-                                    </button>
+                                    <button onClick={() => handleRemoveEnrollment(enr.enrollmentId)}
+                                        className="text-red-500 text-xs font-bold border px-2 py-1 rounded">Remover</button>
                                 </li>
                             ))}
                         </ul>
                     )}
-                    
-                    <div className="pt-2 border-t mt-4 text-right">
-                         <button onClick={() => setViewingEnrollmentsUser(null)} className="px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 text-gray-800 text-sm">Fechar</button>
-                    </div>
                 </div>
           </Modal>
       </div>

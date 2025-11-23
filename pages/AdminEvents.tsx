@@ -1,9 +1,9 @@
+
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { SchoolEvent, EventSession, Course, ClassGroup } from '../types';
 import { storageService } from '../services/storage';
 import { useAuth } from '../context/AuthContext';
 import { Modal } from '../components/Modal';
-import { Pagination } from '../components/Pagination';
 import { formatDate } from '../utils/formatters';
 import { useNavigate } from 'react-router-dom';
 
@@ -93,172 +93,108 @@ export const AdminEvents: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   
-  // Pagination & Filter
+  // Pagination
   const [currentPage, setCurrentPage] = useState(1);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterVisibility, setFilterVisibility] = useState('');
-  const [filterCourse, setFilterCourse] = useState('');
-  const ITEMS_PER_PAGE = 15;
+  const [cursors, setCursors] = useState<any[]>([undefined]);
+  const [hasNextPage, setHasNextPage] = useState(true);
+  const ITEMS_PER_PAGE = 10;
+  
+  // Filters
+  const [filters, setFilters] = useState({
+      searchTerm: '',
+      visibility: '',
+      course: ''
+  });
   
   // Interface Control
   const [modalTitle, setModalTitle] = useState('');
   const [sessionTab, setSessionTab] = useState<'manual' | 'recurring'>('manual');
   const [targetParentName, setTargetParentName] = useState<string | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
-  
   const [dateLimits, setDateLimits] = useState<{min: string, max: string} | null>(null);
-
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isParentDelete, setIsParentDelete] = useState(false);
 
-  const [metrics, setMetrics] = useState({
-      totalEvents: 0,
-      totalSessions: 0,
-      totalCapacity: 0,
-      totalFilled: 0
-  });
-
   const [formData, setFormData] = useState<Partial<SchoolEvent>>({
-    name: '',
-    description: '',
-    location: '',
-    visibility: 'public',
-    allowedCourses: [],
-    allowedClasses: [],
-    sessions: [],
-    parentId: undefined
+    name: '', description: '', location: '', visibility: 'public',
+    allowedCourses: [], allowedClasses: [], sessions: [], parentId: undefined
   });
-  
   const [tempSession, setTempSession] = useState<Partial<EventSession>>({
-      date: '',
-      startTime: '',
-      endTime: '',
-      capacity: 30
+      date: '', startTime: '', endTime: '', capacity: 30
   });
-
   const [recurringConfig, setRecurringConfig] = useState({
-      startDate: '',
-      endDate: '',
-      startTime: '',
-      endTime: '',
-      capacity: 30,
-      daysOfWeek: [] as number[]
+      startDate: '', endDate: '', startTime: '', endTime: '', capacity: 30, daysOfWeek: [] as number[]
   });
 
-  // Constants for limits
   const currentYear = new Date().getFullYear();
-  const endOfYear = `${currentYear}-12-31`;
+  const endOfYear = `${currentYear + 2}-12-31`;
 
-  const fetchEvents = async () => {
-    const data = await storageService.getEvents();
+  const fetchEvents = useCallback(async (page: number) => {
+    setLoading(true);
+    const cursor = cursors[page - 1];
+    const { data, nextCursor } = await storageService.getEvents({
+        limit: ITEMS_PER_PAGE,
+        cursor,
+        filters
+    });
+    // NOTE: Performance trade-off. With pagination, we can't easily show children
+    // right after parents if they are on different pages. This view shows a flat list.
     setEvents(data);
-    
-    let totalSessions = 0;
-    let totalCapacity = 0;
-    let totalFilled = 0;
-    data.forEach(e => {
-        totalSessions += e.sessions.length;
-        e.sessions.forEach(s => {
-            totalCapacity += s.capacity;
-            totalFilled += s.filled;
-        });
-    });
-    setMetrics({
-        totalEvents: data.length,
-        totalSessions,
-        totalCapacity,
-        totalFilled
-    });
-  };
+    setHasNextPage(!!nextCursor);
+    if (nextCursor && cursors.length <= page) {
+        setCursors(prev => [...prev, nextCursor]);
+    }
+    setLoading(false);
+  }, [cursors, filters]);
 
   const fetchMeta = async () => {
-      const c = await storageService.getCourses();
-      const t = await storageService.getClasses();
+      const [c, t] = await Promise.all([storageService.getCourses(), storageService.getClasses()]);
       setCourses(c);
       setClasses(t);
   }
 
   useEffect(() => {
-    fetchEvents();
     fetchMeta();
   }, []);
 
-  // --- Filtering & Sorting Logic ---
+  useEffect(() => {
+    setCursors([undefined]);
+    setCurrentPage(1);
+    fetchEvents(1);
+  }, [filters]);
+
+  const handleNextPage = () => {
+    if (!hasNextPage) return;
+    const nextPage = currentPage + 1;
+    setCurrentPage(nextPage);
+    fetchEvents(nextPage);
+  };
+
+  const handlePrevPage = () => {
+    if (currentPage === 1) return;
+    const prevPage = currentPage - 1;
+    setCurrentPage(prevPage);
+    fetchEvents(prevPage);
+  };
   
-  const sortedEvents = useMemo(() => {
-      const parents = events.filter(e => !e.parentId);
-      const children = events.filter(e => e.parentId);
-      
-      const result: SchoolEvent[] = [];
-      parents.forEach(p => {
-          result.push(p);
-          children.filter(c => c.parentId === p.id).forEach(c => result.push(c));
-      });
-      // Add orphans or independent children
-      children.filter(c => !parents.find(p => p.id === c.parentId)).forEach(c => result.push(c));
-      
-      return result;
-  }, [events]);
+  const handleFilterChange = (key: string, value: string) => {
+    setFilters(prev => ({...prev, [key]: value}));
+  };
 
-  const filteredSortedEvents = useMemo(() => {
-      return sortedEvents.filter(evt => {
-          // 1. Text Search
-          const matchesSearch = evt.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                                evt.description.toLowerCase().includes(searchTerm.toLowerCase());
-          
-          // 2. Visibility Filter
-          const matchesVisibility = filterVisibility ? evt.visibility === filterVisibility : true;
-
-          // 3. Course Filter
-          let matchesCourse = true;
-          if (filterCourse) {
-              if (evt.visibility === 'public') {
-                  // Opcional: se filtrar por curso, esconde eventos públicos? 
-                  // Geralmente sim, para focar no específico. 
-                  // Se quiser mostrar públicos também, mude para true.
-                  matchesCourse = false; 
-              } else if (evt.visibility === 'course') {
-                  matchesCourse = evt.allowedCourses?.includes(filterCourse) || false;
-              } else if (evt.visibility === 'class') {
-                  // Verifica se alguma das turmas permitidas pertence ao curso selecionado
-                  matchesCourse = evt.allowedClasses?.some(clsId => {
-                      const cls = classes.find(c => c.id === clsId);
-                      return cls?.courseId === filterCourse;
-                  }) || false;
-              }
-          }
-          
-          return matchesSearch && matchesVisibility && matchesCourse;
-      });
-  }, [sortedEvents, searchTerm, filterVisibility, filterCourse, classes]);
-
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, filterVisibility, filterCourse]);
-
-  const paginatedEvents = useMemo(() => {
-      const start = (currentPage - 1) * ITEMS_PER_PAGE;
-      return filteredSortedEvents.slice(start, start + ITEMS_PER_PAGE);
-  }, [filteredSortedEvents, currentPage]);
-
-
-  // --- UI Actions ---
+  const resetData = () => {
+      setCurrentPage(1);
+      setCursors([undefined]);
+      fetchEvents(1);
+  };
 
   const resetForm = () => {
       setFormData({ 
-          name: '', 
-          description: '', 
-          location: '',
-          sessions: [], 
-          visibility: 'public', 
-          allowedCourses: [], 
-          allowedClasses: [], 
-          parentId: undefined 
+          name: '', description: '', location: '', sessions: [], visibility: 'public', 
+          allowedCourses: [], allowedClasses: [], parentId: undefined 
       });
       setTempSession({ date: '', startTime: '', endTime: '', capacity: 30 });
       setRecurringConfig({ startDate: '', endDate: '', startTime: '', endTime: '', capacity: 30, daysOfWeek: [] });
-      setTargetParentName(null);
-      setSessionTab('manual');
-      setGenError(null);
-      setDateLimits(null);
+      setTargetParentName(null); setSessionTab('manual'); setGenError(null); setDateLimits(null);
   };
 
   const handleOpenNewEvent = () => {
@@ -267,118 +203,70 @@ export const AdminEvents: React.FC = () => {
       setIsModalOpen(true);
   };
 
-  // Callbacks optimized for React.memo
   const handleOpenSubEvent = useCallback((parentEvent: SchoolEvent) => {
       resetForm();
       setModalTitle(`Adicionar Sub-evento para: ${parentEvent.name}`);
       setTargetParentName(parentEvent.name);
       
-      if (parentEvent.sessions && parentEvent.sessions.length > 0) {
+      if (parentEvent.sessions?.length) {
           const dates = parentEvent.sessions.map(s => s.date).sort();
-          setDateLimits({
-              min: dates[0],
-              max: dates[dates.length - 1]
-          });
-      } else {
-          setDateLimits(null);
+          setDateLimits({ min: dates[0], max: dates[dates.length - 1] });
       }
       
       setFormData({
-          parentId: parentEvent.id,
-          visibility: parentEvent.visibility,
-          allowedCourses: parentEvent.allowedCourses,
-          allowedClasses: parentEvent.allowedClasses,
-          location: parentEvent.location,
-          sessions: [],
-          name: '',
-          description: ''
+          parentId: parentEvent.id, visibility: parentEvent.visibility,
+          allowedCourses: parentEvent.allowedCourses, allowedClasses: parentEvent.allowedClasses,
+          location: parentEvent.location, sessions: [], name: '', description: ''
       });
-      
       setIsModalOpen(true);
   }, []);
 
   const handleEditEvent = useCallback((event: SchoolEvent) => {
-    resetForm();
-    setFormData({ ...event });
-    setModalTitle('Editar Evento');
-    
-    if (event.parentId) {
-        // Logic to find parent name if needed
-    }
-    setIsModalOpen(true);
+    resetForm(); setFormData({ ...event }); setModalTitle('Editar Evento'); setIsModalOpen(true);
   }, []); 
 
   const requestDelete = useCallback((event: SchoolEvent) => {
-      setDeleteId(event.id);
-      setIsParentDelete(!event.parentId);
+      setDeleteId(event.id); setIsParentDelete(!event.parentId);
   }, []);
 
   const handleManageEnrollments = useCallback((event: SchoolEvent) => {
       navigate(`/admin/events/${event.id}/enrollments`);
   }, [navigate]);
 
-  // ... (Session logic remains the same) ... 
   const handleAddSession = () => {
     if(!tempSession.date || !tempSession.startTime || !tempSession.endTime) return;
-    if (dateLimits && (tempSession.date! < dateLimits.min || tempSession.date! > dateLimits.max)) {
-        setGenError(`A data deve estar entre ${formatDate(dateLimits.min)} e ${formatDate(dateLimits.max)} (Período do evento pai).`);
-        return;
+    if (dateLimits && (tempSession.date < dateLimits.min || tempSession.date > dateLimits.max)) {
+        setGenError(`A data deve estar entre ${formatDate(dateLimits.min)} e ${formatDate(dateLimits.max)}.`); return;
     }
     const newSession: EventSession = {
-        id: `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        date: tempSession.date!,
-        startTime: tempSession.startTime!,
-        endTime: tempSession.endTime!,
-        capacity: tempSession.capacity || 30,
-        filled: 0
+        id: `sess_${Date.now()}`, date: tempSession.date!, startTime: tempSession.startTime!,
+        endTime: tempSession.endTime!, capacity: tempSession.capacity || 30, filled: 0
     };
     setFormData(prev => ({ ...prev, sessions: [...(prev.sessions || []), newSession] }));
-    setTempSession({ date: '', startTime: '', endTime: '', capacity: 30 });
-    setGenError(null);
+    setTempSession({ date: '', startTime: '', endTime: '', capacity: 30 }); setGenError(null);
   };
 
   const handleGenerateRecurring = () => {
       setGenError(null);
       const { startDate, endDate, startTime, endTime, capacity, daysOfWeek } = recurringConfig;
-      if (!startDate || !endDate || !startTime || !endTime || daysOfWeek.length === 0) {
-          setGenError("Preencha todos os campos e selecione pelo menos um dia da semana.");
-          return;
-      }
-      if (dateLimits && (startDate < dateLimits.min || startDate > dateLimits.max || endDate < dateLimits.min || endDate > dateLimits.max)) {
-         setGenError(`O intervalo deve estar contido entre ${formatDate(dateLimits.min)} e ${formatDate(dateLimits.max)}.`);
-         return; 
-      }
-      // NEW: Limit to current year
-      if (endDate > endOfYear) {
-         setGenError(`Para evitar sobrecarga no sistema, a geração automática de sessões é limitada até ${formatDate(endOfYear)}.`);
-         return;
-      }
+      if (!startDate || !endDate || !startTime || !endTime || !daysOfWeek.length) { setGenError("Preencha todos os campos."); return; }
+      if (dateLimits && (startDate < dateLimits.min || endDate > dateLimits.max)) { setGenError(`O intervalo deve estar entre ${formatDate(dateLimits.min)} e ${formatDate(dateLimits.max)}.`); return; }
+      if (endDate > endOfYear) { setGenError(`A geração é limitada até ${formatDate(endOfYear)}.`); return; }
 
-      const [startYear, startMonth, startDay] = startDate.split('-').map(Number);
-      const [endYear, endMonth, endDay] = endDate.split('-').map(Number);
-      const start = new Date(startYear, startMonth - 1, startDay, 12, 0, 0);
-      const end = new Date(endYear, endMonth - 1, endDay, 12, 0, 0);
-      const newSessions: EventSession[] = [];
-      if (start > end) { setGenError("A data de início deve ser anterior à data de fim."); return; }
+      const start = new Date(`${startDate}T12:00:00Z`); const end = new Date(`${endDate}T12:00:00Z`);
+      if (start > end) { setGenError("A data de início deve ser anterior à de fim."); return; }
       
-      // Safety brake: max 366 iterations (1 year)
-      let safetyCount = 0;
+      const newSessions: EventSession[] = [];
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-          safetyCount++;
-          if (safetyCount > 370) break;
-
-          if (daysOfWeek.includes(d.getDay())) {
-              const year = d.getFullYear();
-              const month = String(d.getMonth() + 1).padStart(2, '0');
-              const day = String(d.getDate()).padStart(2, '0');
+          if (daysOfWeek.includes(d.getUTCDay())) {
               newSessions.push({
-                  id: `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                  date: `${year}-${month}-${day}`,
+                  id: `sess_${d.getTime()}`, date: d.toISOString().split('T')[0],
                   startTime, endTime, capacity, filled: 0
               });
           }
       }
-      if (newSessions.length === 0) { setGenError("Nenhuma data encontrada."); return; }
+      if (newSessions.length > 100) { setGenError("Limite de 100 sessões por vez atingido."); return; }
+      if (!newSessions.length) { setGenError("Nenhuma data encontrada no intervalo."); return; }
       setFormData(prev => ({ ...prev, sessions: [...(prev.sessions || []), ...newSessions] }));
   };
 
@@ -388,122 +276,53 @@ export const AdminEvents: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.sessions?.length) { setGenError("Preencha o nome e adicione sessão."); return; }
+    if (!formData.name || !formData.sessions?.length) { setGenError("Nome e ao menos uma sessão são obrigatórios."); return; }
     setLoading(true);
     try {
         if (formData.id) await storageService.updateEvent(formData as SchoolEvent);
         else {
             await storageService.createEvent({
-                id: `evt_${Date.now()}`,
-                name: formData.name!,
-                description: formData.description || '',
-                location: formData.location || 'A definir',
-                visibility: formData.visibility as any || 'public',
-                allowedCourses: formData.allowedCourses,
-                allowedClasses: formData.allowedClasses,
-                sessions: formData.sessions || [],
-                parentId: formData.parentId || undefined,
-                createdBy: user?.uid || '',
-                createdAt: new Date().toISOString()
-            });
+                ...formData, id: `evt_${Date.now()}`, createdAt: new Date().toISOString(), createdBy: user?.uid || ''
+            } as SchoolEvent);
         }
-        setIsModalOpen(false);
-        resetForm();
-        fetchEvents();
+        setIsModalOpen(false); resetForm(); resetData();
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
   const confirmDelete = async () => {
     if (deleteId) {
         await storageService.deleteEvent(deleteId);
-        setDeleteId(null);
-        fetchEvents();
+        setDeleteId(null); resetData();
     }
   }
 
-  // Toggle helpers
-  const toggleCourse = (id: string) => {
-      setFormData(prev => ({ ...prev, allowedCourses: prev.allowedCourses?.includes(id) ? prev.allowedCourses.filter(c => c !== id) : [...(prev.allowedCourses || []), id] }));
-  };
-  const toggleClass = (id: string) => {
-      setFormData(prev => ({ ...prev, allowedClasses: prev.allowedClasses?.includes(id) ? prev.allowedClasses.filter(c => c !== id) : [...(prev.allowedClasses || []), id] }));
-  };
-  const toggleDayOfWeek = (dayIndex: number) => {
-      setRecurringConfig(prev => ({ ...prev, daysOfWeek: prev.daysOfWeek.includes(dayIndex) ? prev.daysOfWeek.filter(d => d !== dayIndex) : [...prev.daysOfWeek, dayIndex] }));
-  };
-
-  const occupancyRate = metrics.totalCapacity > 0 ? Math.round((metrics.totalFilled / metrics.totalCapacity) * 100) : 0;
-
-  // Compute max allowed date for inputs
-  const maxDateAllowed = useMemo(() => {
-      if (dateLimits) {
-          // If parent limits exist, take the smaller of (Parent Max vs End of Year)
-          return dateLimits.max < endOfYear ? dateLimits.max : endOfYear;
-      }
-      return endOfYear;
-  }, [dateLimits, endOfYear]);
+  const toggleCourse = (id: string) => setFormData(prev => ({ ...prev, allowedCourses: prev.allowedCourses?.includes(id) ? prev.allowedCourses.filter(c => c !== id) : [...(prev.allowedCourses || []), id] }));
+  const toggleClass = (id: string) => setFormData(prev => ({ ...prev, allowedClasses: prev.allowedClasses?.includes(id) ? prev.allowedClasses.filter(c => c !== id) : [...(prev.allowedClasses || []), id] }));
+  const toggleDayOfWeek = (day: number) => setRecurringConfig(prev => ({ ...prev, daysOfWeek: prev.daysOfWeek.includes(day) ? prev.daysOfWeek.filter(d => d !== day) : [...prev.daysOfWeek, day] }));
 
   return (
     <div className="container mx-auto space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="bg-white p-4 rounded shadow border-l-4 border-primary">
-              <div className="text-gray-500 text-sm font-medium uppercase">Eventos Ativos</div>
-              <div className="text-2xl font-bold text-gray-900">{metrics.totalEvents}</div>
-          </div>
-          <div className="bg-white p-4 rounded shadow border-l-4 border-blue-500">
-              <div className="text-gray-500 text-sm font-medium uppercase">Total de Sessões</div>
-              <div className="text-2xl font-bold text-gray-900">{metrics.totalSessions}</div>
-          </div>
-          <div className="bg-white p-4 rounded shadow border-l-4 border-secondary">
-              <div className="text-gray-500 text-sm font-medium uppercase">Inscritos / Vagas</div>
-              <div className="text-2xl font-bold text-gray-900">{metrics.totalFilled} <span className="text-gray-400 text-lg">/ {metrics.totalCapacity}</span></div>
-          </div>
-          <div className="bg-white p-4 rounded shadow border-l-4 border-orange-500">
-              <div className="text-gray-500 text-sm font-medium uppercase">Taxa de Ocupação</div>
-              <div className="text-2xl font-bold text-gray-900">{occupancyRate}%</div>
-          </div>
-      </div>
-
       <div className="flex flex-col lg:flex-row justify-between items-center gap-4">
         <h1 className="text-2xl font-bold text-gray-900">Gerenciamento de Eventos</h1>
         <div className="flex flex-col xl:flex-row gap-2 w-full lg:w-auto items-center">
             <div className="w-full xl:w-64">
-                <input 
-                    type="text" 
-                    placeholder="Buscar evento..." 
-                    className="w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-primary focus:border-primary bg-white text-gray-900"
-                    value={searchTerm}
-                    onChange={e => setSearchTerm(e.target.value)}
-                />
+                <input type="text" placeholder="Buscar evento..." 
+                    className="w-full border-gray-300 rounded-md bg-white text-gray-900"
+                    value={filters.searchTerm} onChange={e => handleFilterChange('searchTerm', e.target.value)} />
             </div>
             <div className="flex gap-2 w-full xl:w-auto">
-                <div className="flex-1 xl:w-40">
-                    <select 
-                        className="w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900"
-                        value={filterVisibility}
-                        onChange={e => setFilterVisibility(e.target.value)}
-                    >
-                        <option value="">Visibilidade</option>
-                        <option value="public">Público</option>
-                        <option value="course">Por Curso</option>
-                        <option value="class">Por Turma</option>
-                    </select>
-                </div>
-                <div className="flex-1 xl:w-48">
-                    <select 
-                        className="w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900"
-                        value={filterCourse}
-                        onChange={e => setFilterCourse(e.target.value)}
-                    >
-                        <option value="">Todos os Cursos</option>
-                        {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                </div>
+                <select className="w-full border-gray-300 rounded-md bg-white text-gray-900"
+                    value={filters.visibility} onChange={e => handleFilterChange('visibility', e.target.value)}>
+                    <option value="">Visibilidade</option>
+                    <option value="public">Público</option><option value="course">Por Curso</option><option value="class">Por Turma</option>
+                </select>
+                <select className="w-full border-gray-300 rounded-md bg-white text-gray-900"
+                    value={filters.course} onChange={e => handleFilterChange('course', e.target.value)}>
+                    <option value="">Todos os Cursos</option>
+                    {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
             </div>
-            <button
-                onClick={handleOpenNewEvent}
-                className="w-full xl:w-auto bg-primary text-white px-6 py-2 rounded-md hover:bg-indigo-700 shadow-sm transition font-bold whitespace-nowrap"
-            >
+            <button onClick={handleOpenNewEvent} className="w-full xl:w-auto bg-primary text-white px-6 py-2 rounded-md font-bold whitespace-nowrap">
             + Novo Evento
             </button>
         </div>
@@ -511,222 +330,102 @@ export const AdminEvents: React.FC = () => {
 
       <div className="bg-white shadow overflow-hidden sm:rounded-md">
         <ul className="divide-y divide-gray-200">
-          {paginatedEvents.map((evt) => (
-              <AdminEventRow 
-                key={evt.id}
-                evt={evt}
-                onOpenSubEvent={handleOpenSubEvent}
-                onManageEnrollments={handleManageEnrollments}
-                onEdit={handleEditEvent}
-                onDelete={requestDelete}
-              />
+          {loading && <li className="px-6 py-12 text-center text-gray-500">Carregando eventos...</li>}
+          {!loading && events.map((evt) => (
+              <AdminEventRow key={evt.id} evt={evt}
+                onOpenSubEvent={handleOpenSubEvent} onManageEnrollments={handleManageEnrollments}
+                onEdit={handleEditEvent} onDelete={requestDelete} />
           ))}
-          {paginatedEvents.length === 0 && (
-            <li className="px-6 py-12 text-center text-gray-500">Nenhum evento encontrado com os filtros atuais.</li>
+          {!loading && events.length === 0 && (
+            <li className="px-6 py-12 text-center text-gray-500">Nenhum evento encontrado.</li>
           )}
         </ul>
       </div>
 
-      <Pagination 
-         currentPage={currentPage}
-         totalItems={filteredSortedEvents.length}
-         itemsPerPage={ITEMS_PER_PAGE}
-         onPageChange={setCurrentPage}
-      />
+      <div className="flex justify-between items-center mt-4">
+        <button onClick={handlePrevPage} disabled={currentPage === 1 || loading} className="px-4 py-2 bg-white border rounded-md text-sm font-medium hover:bg-gray-50 disabled:opacity-50">Anterior</button>
+        <span className="text-sm text-gray-500">Página {currentPage}</span>
+        <button onClick={handleNextPage} disabled={!hasNextPage || loading} className="px-4 py-2 bg-white border rounded-md text-sm font-medium hover:bg-gray-50 disabled:opacity-50">Próximo</button>
+      </div>
 
-      {/* Modals */}
       <Modal isOpen={!!deleteId} onClose={() => setDeleteId(null)} title="Confirmar Exclusão">
-          <div className="p-2">
-              <p className="text-gray-700">
-                  Tem certeza que deseja excluir este evento e todas as suas sessões?
-                  {isParentDelete && (
-                      <>
-                        <br/>
-                        <span className="text-red-600 font-bold block mt-2">⚠ Atenção: Ao excluir um evento principal, todos os sub-eventos vinculados a ele também serão excluídos permanentemente.</span>
-                      </>
-                  )}
-                  {!isParentDelete && <br/>}
-                  <span className="text-red-500 text-sm font-bold block mt-2">Essa ação não pode ser desfeita.</span>
-              </p>
+          <div>
+              <p>Tem certeza que deseja excluir este evento?</p>
+              {isParentDelete && <p className="text-red-600 font-bold">Atenção: Todos os sub-eventos vinculados também serão excluídos.</p>}
               <div className="flex justify-end gap-3 mt-6">
-                  <button onClick={() => setDeleteId(null)} className="px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 text-gray-800">Cancelar</button>
-                  <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 rounded hover:bg-red-700 text-white font-bold">Confirmar Exclusão</button>
+                  <button onClick={() => setDeleteId(null)} className="px-4 py-2 bg-gray-100 rounded">Cancelar</button>
+                  <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 rounded text-white font-bold">Confirmar</button>
               </div>
           </div>
       </Modal>
 
       <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={modalTitle}>
         <form onSubmit={handleSubmit} className="space-y-4 max-h-[80vh] overflow-y-auto px-1">
+            <input type="text" required placeholder="Nome do Evento" className="w-full border rounded p-2 bg-white text-gray-900"
+                value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
             
-            <div>
-                <label className="block text-sm font-medium text-gray-700">Nome do Evento</label>
-                <input 
-                    type="text" 
-                    required
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-primary focus:border-primary bg-white text-gray-900"
-                    value={formData.name}
-                    onChange={e => setFormData({...formData, name: e.target.value})}
-                />
-            </div>
-
             <div className={targetParentName ? 'opacity-50 pointer-events-none' : ''}>
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                        Visibilidade {targetParentName && <span className="text-xs text-indigo-600">(Herdado do Pai: {targetParentName})</span>}
-                    </label>
-                    <select 
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900"
-                        value={formData.visibility}
-                        onChange={e => setFormData({...formData, visibility: e.target.value as any})}
-                        disabled={!!targetParentName}
-                    >
-                        <option value="public">Público (Todos)</option>
-                        <option value="course">Restrito a Cursos</option>
-                        <option value="class">Restrito a Turmas</option>
-                    </select>
-                </div>
-
-                {formData.visibility === 'course' && (
-                    <div className="bg-gray-50 p-3 rounded border mt-2">
-                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase">Selecione os Cursos Permitidos</label>
-                        <div className="space-y-2 max-h-40 overflow-y-auto">
-                            {courses.map(c => (
-                                <label key={c.id} className="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" 
-                                        checked={formData.allowedCourses?.includes(c.id)}
-                                        onChange={() => toggleCourse(c.id)}
-                                        className="rounded text-primary focus:ring-primary bg-white"
-                                    />
-                                    <span className="text-sm">{c.name}</span>
-                                </label>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
-                {formData.visibility === 'class' && (
-                    <div className="bg-gray-50 p-3 rounded border mt-2">
-                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase">Selecione as Turmas Permitidas</label>
-                        <div className="space-y-4 max-h-60 overflow-y-auto">
-                            {courses.map(course => {
-                                const courseClasses = classes.filter(cls => cls.courseId === course.id);
-                                if (courseClasses.length === 0) return null;
-                                return (
-                                    <div key={course.id}>
-                                        <div className="text-xs font-bold text-indigo-600 mb-1 sticky top-0 bg-gray-50 py-1">{course.name}</div>
-                                        <div className="pl-2 space-y-1 border-l-2 border-indigo-100">
-                                            {courseClasses.map(cls => (
-                                                <label key={cls.id} className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 rounded p-1">
-                                                    <input type="checkbox" 
-                                                        checked={formData.allowedClasses?.includes(cls.id)}
-                                                        onChange={() => toggleClass(cls.id)}
-                                                        className="rounded text-primary focus:ring-primary bg-white"
-                                                    />
-                                                    <span className="text-sm">{cls.name}</span>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
+                <select value={formData.visibility} onChange={e => setFormData({...formData, visibility: e.target.value as any})}
+                    className="w-full border rounded p-2 bg-white text-gray-900" disabled={!!targetParentName}>
+                    <option value="public">Público</option><option value="course">Restrito a Cursos</option><option value="class">Restrito a Turmas</option>
+                </select>
+                {formData.visibility === 'course' && <div className="p-2 border rounded max-h-40 overflow-y-auto">{courses.map(c => <div key={c.id}><input type="checkbox" id={`c_${c.id}`} checked={formData.allowedCourses?.includes(c.id)} onChange={() => toggleCourse(c.id)}/><label htmlFor={`c_${c.id}`}>{c.name}</label></div>)}</div>}
+                {formData.visibility === 'class' && <div className="p-2 border rounded max-h-40 overflow-y-auto">{courses.map(c => <div key={c.id}><strong>{c.name}</strong>{classes.filter(cl => cl.courseId === c.id).map(cl => <div key={cl.id}><input type="checkbox" id={`cl_${cl.id}`} checked={formData.allowedClasses?.includes(cl.id)} onChange={() => toggleClass(cl.id)}/><label htmlFor={`cl_${cl.id}`}>{cl.name}</label></div>)}</div>)}</div>}
             </div>
 
-            <div>
-                <label className="block text-sm font-medium text-gray-700">Descrição</label>
-                <textarea 
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-primary focus:border-primary bg-white text-gray-900"
-                    rows={3}
-                    value={formData.description}
-                    onChange={e => setFormData({...formData, description: e.target.value})}
-                />
-            </div>
-            <div>
-                <label className="block text-sm font-medium text-gray-700">Local</label>
-                <input 
-                    type="text" 
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-primary focus:border-primary bg-white text-gray-900"
-                    value={formData.location}
-                    onChange={e => setFormData({...formData, location: e.target.value})}
-                />
-            </div>
+            <textarea placeholder="Descrição" className="w-full border rounded p-2 bg-white text-gray-900" rows={2}
+                value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} />
+            <input type="text" placeholder="Local" className="w-full border rounded p-2 bg-white text-gray-900"
+                value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})} />
 
             <div className="border-t pt-4">
-                <h4 className="font-medium text-gray-900 mb-2">Gerenciar Sessões</h4>
-                {dateLimits && (
-                    <div className="mb-4 bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-md">
-                        <div className="flex">
-                            <div className="flex-shrink-0">
-                                <svg className="h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></svg>
-                            </div>
-                            <div className="ml-3">
-                                <h3 className="text-sm font-medium text-blue-800">Restrição de Data Ativa</h3>
-                                <div className="mt-2 text-sm text-blue-700">
-                                    <p>O evento pai ocorre entre <span className="font-bold whitespace-nowrap">{formatDate(dateLimits.min)}</span> e <span className="font-bold whitespace-nowrap">{formatDate(dateLimits.max)}</span>.</p>
-                                    <p className="mt-1 text-xs text-blue-600">Todas as sessões deste sub-evento devem estar contidas neste intervalo.</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                <h4>Gerenciar Sessões</h4>
+                {dateLimits && <div className="bg-blue-100 p-2 rounded text-sm">Restrição de Data Ativa: {formatDate(dateLimits.min)} a {formatDate(dateLimits.max)}.</div>}
                 
                 <div className="flex space-x-1 bg-gray-100 p-1 rounded-t-md">
-                    <button type="button" onClick={() => setSessionTab('manual')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${sessionTab === 'manual' ? 'bg-white text-primary shadow' : 'text-gray-500 hover:text-gray-700'}`}>Inserção Manual</button>
-                    <button type="button" onClick={() => setSessionTab('recurring')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${sessionTab === 'recurring' ? 'bg-white text-primary shadow' : 'text-gray-500 hover:text-gray-700'}`}>Gerador de Recorrência</button>
+                    <button type="button" onClick={() => setSessionTab('manual')} className={`flex-1 py-2 text-sm rounded-md ${sessionTab === 'manual' ? 'bg-white text-primary shadow' : 'text-gray-500'}`}>Manual</button>
+                    <button type="button" onClick={() => setSessionTab('recurring')} className={`flex-1 py-2 text-sm rounded-md ${sessionTab === 'recurring' ? 'bg-white text-primary shadow' : 'text-gray-500'}`}>Recorrência</button>
                 </div>
 
                 {sessionTab === 'manual' && (
-                    <div className="grid grid-cols-2 gap-2 bg-gray-50 p-3 rounded-b-md border border-gray-200 border-t-0">
-                        <div className="col-span-2 text-xs font-medium text-gray-500 uppercase">Data e Capacidade</div>
+                    <div className="grid grid-cols-2 gap-2 bg-gray-50 p-3 rounded-b-md border">
                         <input type="date" className="border p-1 rounded text-sm bg-white text-gray-900" value={tempSession.date} min={dateLimits?.min} max={dateLimits?.max} onChange={e => setTempSession({...tempSession, date: e.target.value})} />
                         <input type="number" placeholder="Capacidade" className="border p-1 rounded text-sm bg-white text-gray-900" value={tempSession.capacity} onChange={e => setTempSession({...tempSession, capacity: parseInt(e.target.value)})} />
-                        <div className="col-span-2 text-xs font-medium text-gray-500 uppercase mt-2">Horário (Início - Fim)</div>
                         <input type="time" className="border p-1 rounded text-sm bg-white text-gray-900" value={tempSession.startTime} onChange={e => setTempSession({...tempSession, startTime: e.target.value})} />
                         <input type="time" className="border p-1 rounded text-sm bg-white text-gray-900" value={tempSession.endTime} onChange={e => setTempSession({...tempSession, endTime: e.target.value})} />
-                        <button type="button" onClick={handleAddSession} className="col-span-2 mt-2 bg-white border border-primary text-primary py-2 rounded text-sm hover:bg-indigo-50 font-medium">+ Adicionar Sessão</button>
+                        <button type="button" onClick={handleAddSession} className="col-span-2 mt-2 bg-white border border-primary text-primary py-2 rounded text-sm">+ Adicionar Sessão</button>
                     </div>
                 )}
 
                 {sessionTab === 'recurring' && (
-                    <div className="bg-indigo-50 p-3 rounded-b-md space-y-3 border border-indigo-100 border-t-0">
-                         <div className="grid grid-cols-2 gap-2">
-                            <div><label className="text-xs text-gray-600 font-bold">Data Início</label><input type="date" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.startDate} min={dateLimits?.min} max={maxDateAllowed} onChange={e => setRecurringConfig({...recurringConfig, startDate: e.target.value})} /></div>
-                            <div><label className="text-xs text-gray-600 font-bold">Data Fim</label><input type="date" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.endDate} min={dateLimits?.min} max={maxDateAllowed} onChange={e => setRecurringConfig({...recurringConfig, endDate: e.target.value})} /></div>
+                    <div className="bg-indigo-50 p-3 rounded-b-md space-y-3 border">
+                        <div className="grid grid-cols-2 gap-2">
+                            <input type="date" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.startDate} min={dateLimits?.min} max={endOfYear} onChange={e => setRecurringConfig({...recurringConfig, startDate: e.target.value})} />
+                            <input type="date" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.endDate} min={dateLimits?.min} max={endOfYear} onChange={e => setRecurringConfig({...recurringConfig, endDate: e.target.value})} />
                         </div>
-                        
-                        {/* Warning about limits */}
-                        <div className="text-xs text-indigo-600 italic">
-                           * A geração automática é limitada ao ano corrente ({currentYear}).
-                        </div>
-
                         <div className="grid grid-cols-3 gap-2">
-                             <div><label className="text-xs text-gray-600 font-bold">Início</label><input type="time" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.startTime} onChange={e => setRecurringConfig({...recurringConfig, startTime: e.target.value})} /></div>
-                             <div><label className="text-xs text-gray-600 font-bold">Fim</label><input type="time" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.endTime} onChange={e => setRecurringConfig({...recurringConfig, endTime: e.target.value})} /></div>
-                             <div><label className="text-xs text-gray-600 font-bold">Capacidade</label><input type="number" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.capacity} onChange={e => setRecurringConfig({...recurringConfig, capacity: parseInt(e.target.value)})} /></div>
+                             <input type="time" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.startTime} onChange={e => setRecurringConfig({...recurringConfig, startTime: e.target.value})} />
+                             <input type="time" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.endTime} onChange={e => setRecurringConfig({...recurringConfig, endTime: e.target.value})} />
+                             <input type="number" className="w-full border p-1 rounded text-sm bg-white text-gray-900" value={recurringConfig.capacity} onChange={e => setRecurringConfig({...recurringConfig, capacity: parseInt(e.target.value)})} />
                         </div>
-                        <div>
-                            <label className="text-xs text-gray-600 font-bold block mb-1">Dias da Semana</label>
-                            <div className="flex flex-wrap gap-2">
-                                {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'].map((day, index) => (
-                                    <button key={day} type="button" onClick={() => toggleDayOfWeek(index)} className={`text-xs px-3 py-1.5 rounded border font-medium transition ${recurringConfig.daysOfWeek.includes(index) ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>{day}</button>
-                                ))}
-                            </div>
+                        <div className="flex flex-wrap gap-2">
+                            {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'].map((day, i) => (
+                                <button key={day} type="button" onClick={() => toggleDayOfWeek(i)} className={`text-xs px-3 py-1.5 rounded border ${recurringConfig.daysOfWeek.includes(i) ? 'bg-primary text-white' : 'bg-white'}`}>{day}</button>
+                            ))}
                         </div>
-                        {genError && <div className="text-xs text-red-600 bg-red-50 border border-red-200 p-2 rounded">{genError}</div>}
-                        <button type="button" onClick={handleGenerateRecurring} className="w-full bg-primary text-white py-2 rounded text-sm hover:bg-indigo-700 shadow-sm font-medium">Gerar Sessões Automaticamente</button>
+                        {genError && <div className="text-xs text-red-600 p-2 rounded">{genError}</div>}
+                        <button type="button" onClick={handleGenerateRecurring} className="w-full bg-primary text-white py-2 rounded text-sm">Gerar Sessões</button>
                     </div>
                 )}
-
+                
                 <div className="mt-4 space-y-2">
-                    <div className="flex justify-between items-center"><h5 className="text-xs font-bold text-gray-500 uppercase">Sessões Geradas ({formData.sessions?.length || 0})</h5>{(formData.sessions?.length || 0) > 0 && <button type="button" onClick={() => setFormData({...formData, sessions: []})} className="text-xs text-red-500 hover:underline">Limpar Tudo</button>}</div>
+                    <h5 className="text-xs font-bold text-gray-500">Sessões Geradas ({formData.sessions?.length || 0})</h5>
                     <div className="max-h-40 overflow-y-auto space-y-1 border rounded p-2 bg-gray-50">
-                        {formData.sessions?.length === 0 && <p className="text-xs text-gray-400 text-center py-4">Nenhuma sessão adicionada</p>}
-                        {formData.sessions?.slice().sort((a,b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).map((s, i) => (
-                            <div key={i} className="text-xs bg-white border p-2 rounded flex justify-between items-center group hover:border-primary">
-                                <div><span className="font-bold text-gray-800">{formatDate(s.date)}</span><span className="mx-2 text-gray-300">|</span><span>{s.startTime} - {s.endTime}</span><span className="mx-2 text-gray-300">|</span><span className="text-blue-600 font-medium">{s.capacity} vagas</span></div>
-                                <button type="button" onClick={() => removeSession(i)} className="text-red-500 hover:text-red-700 font-medium">×</button>
+                        {formData.sessions?.length === 0 && <p className="text-xs text-gray-400 text-center py-4">Nenhuma sessão</p>}
+                        {formData.sessions?.slice().sort((a,b) => a.date.localeCompare(b.date)).map((s, i) => (
+                            <div key={i} className="text-xs bg-white border p-2 rounded flex justify-between items-center">
+                                <span>{formatDate(s.date)} | {s.startTime}-{s.endTime} | {s.capacity} vagas</span>
+                                <button type="button" onClick={() => removeSession(i)} className="text-red-500">×</button>
                             </div>
                         ))}
                     </div>
@@ -734,8 +433,8 @@ export const AdminEvents: React.FC = () => {
             </div>
 
             <div className="pt-4">
-                {genError && <div className="mb-2 text-sm text-red-600 text-center font-bold">Existem erros no formulário, verifique acima.</div>}
-                <button type="submit" disabled={loading} className="w-full bg-green-600 text-white py-3 rounded-md hover:bg-green-700 disabled:opacity-50 font-bold text-sm shadow-sm">{loading ? 'Salvando...' : (formData.id ? 'Atualizar Evento' : 'Confirmar Criação do Evento')}</button>
+                {genError && <div className="mb-2 text-sm text-red-600 text-center">{genError}</div>}
+                <button type="submit" disabled={loading} className="w-full bg-green-600 text-white py-3 rounded-md disabled:opacity-50 font-bold">{loading ? 'Salvando...' : 'Confirmar'}</button>
             </div>
         </form>
       </Modal>
