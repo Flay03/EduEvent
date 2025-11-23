@@ -1,23 +1,23 @@
+
 import React, { useState } from 'react';
 import { storageService } from '../services/storage';
-import { Modal } from '../components/Modal';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useToast } from '../components/Toast';
 
 export const DevTools: React.FC = () => {
   const [loading, setLoading] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [feedback, setFeedback] = useState<{type: 'success'|'error', msg: string} | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const { addToast } = useToast();
 
-  const handleOpenModal = () => {
-      setFeedback(null);
-      setIsModalOpen(true);
+  const handleOpenDialog = () => {
+      setIsDialogOpen(true);
   };
 
   const executeSeed = async () => {
       setLoading(true);
-      setFeedback(null);
       try {
         await storageService.resetAndSeedData();
-        setFeedback({ type: 'success', msg: 'Dados gerados com sucesso! Recarregando sistema...' });
+        addToast('success', 'Dados gerados com sucesso! Recarregando sistema...');
         
         // Aguarda um pouco para o usuário ler antes de recarregar
         setTimeout(() => {
@@ -25,8 +25,9 @@ export const DevTools: React.FC = () => {
         }, 2000);
       } catch (e) {
           console.error(e);
-          setFeedback({ type: 'error', msg: 'Ocorreu um erro ao gerar os dados.' });
+          addToast('error', 'Ocorreu um erro ao gerar os dados.');
           setLoading(false);
+          setIsDialogOpen(false);
       }
   };
 
@@ -44,7 +45,7 @@ export const DevTools: React.FC = () => {
           <div className="mt-5">
             <button
               type="button"
-              onClick={handleOpenModal}
+              onClick={handleOpenDialog}
               className="inline-flex items-center justify-center px-4 py-2 border border-transparent font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:text-sm"
             >
               ⚠️ Resetar e Gerar Massa de Dados
@@ -64,42 +65,15 @@ export const DevTools: React.FC = () => {
           </ul>
       </div>
 
-      <Modal isOpen={isModalOpen} onClose={() => !loading && setIsModalOpen(false)} title="Confirmar Reset">
-          <div className="space-y-4">
-              <p className="text-gray-700">
-                  Tem certeza absoluta? Essa ação apagará <strong>todos</strong> os usuários, eventos e inscrições atuais e criará dados fictícios.
-              </p>
-              
-              {feedback && (
-                  <div className={`p-3 rounded text-sm font-bold text-center ${feedback.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                      {feedback.msg}
-                  </div>
-              )}
-
-              <div className="flex justify-end gap-3 pt-4">
-                  <button 
-                    onClick={() => setIsModalOpen(false)} 
-                    disabled={loading}
-                    className="px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 text-gray-800 disabled:opacity-50"
-                  >
-                      Cancelar
-                  </button>
-                  <button 
-                    onClick={executeSeed} 
-                    disabled={loading}
-                    className="px-4 py-2 bg-red-600 rounded hover:bg-red-700 text-white font-bold disabled:opacity-50 flex items-center"
-                  >
-                      {loading && (
-                          <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                      )}
-                      {loading ? 'Gerando...' : 'Sim, Resetar Tudo'}
-                  </button>
-              </div>
-          </div>
-      </Modal>
+      <ConfirmDialog 
+        isOpen={isDialogOpen}
+        onClose={() => setIsDialogOpen(false)}
+        onConfirm={executeSeed}
+        title="Confirmar Reset"
+        message="Tem certeza absoluta? Essa ação apagará todos os usuários, eventos e inscrições atuais e criará dados fictícios."
+        confirmText="Sim, Resetar Tudo"
+        isProcessing={loading}
+      />
     </div>
   );
 };

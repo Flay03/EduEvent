@@ -1,6 +1,8 @@
 import React from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider } from './components/Toast';
+import { ThemeProvider } from './context/ThemeContext';
 import { Layout } from './components/Layout';
 import { Login } from './pages/Login';
 import { ProfileCompletion } from './pages/ProfileCompletion';
@@ -19,7 +21,7 @@ import { UserRole } from './types';
 const ProtectedRoute: React.FC<{ children: React.ReactNode, roleRequired?: UserRole }> = ({ children, roleRequired }) => {
   const { user, loading } = useAuth();
   
-  if (loading) return <div className="h-screen flex items-center justify-center">Carregando...</div>;
+  if (loading) return <div className="h-screen flex items-center justify-center text-primary font-medium dark:bg-darkbg dark:text-gray-200">Carregando EduEvent...</div>;
   
   if (!user) return <Navigate to="/login" />;
   
@@ -93,9 +95,13 @@ const AppRoutes = () => {
 function App() {
   return (
     <AuthProvider>
-      <HashRouter>
-        <AppRoutes />
-      </HashRouter>
+      <ThemeProvider>
+        <ToastProvider>
+          <HashRouter>
+            <AppRoutes />
+          </HashRouter>
+        </ToastProvider>
+      </ThemeProvider>
     </AuthProvider>
   );
 }

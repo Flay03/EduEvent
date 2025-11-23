@@ -375,10 +375,20 @@ class MockStorageService implements IStorageService {
     await delay(400);
     let events = this.getItems<SchoolEvent>(STORAGE_KEYS.EVENTS);
     
-    // Cascade delete: remove the event AND any children events linked to it
-    events = events.filter(e => e.id !== eventId && e.parentId !== eventId);
+    // 1. Identificar eventos a serem removidos (pai + filhos)
+    const idsToRemove = events
+        .filter(e => e.id === eventId || e.parentId === eventId)
+        .map(e => e.id);
     
+    // 2. Remover eventos
+    events = events.filter(e => !idsToRemove.includes(e.id));
     localStorage.setItem(STORAGE_KEYS.EVENTS, JSON.stringify(events));
+
+    // 3. FIX: Cascata de exclusão para inscrições
+    // Se não removermos, o sistema achará que o aluno ainda tem um compromisso naquele horário
+    let enrollments = this.getItems<Enrollment>(STORAGE_KEYS.ENROLLMENTS);
+    enrollments = enrollments.filter(e => !idsToRemove.includes(e.eventId));
+    localStorage.setItem(STORAGE_KEYS.ENROLLMENTS, JSON.stringify(enrollments));
   }
 
   // --- Enrollments ---
