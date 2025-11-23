@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { storageService } from '../services/storage';
-import { Course, ClassGroup } from '../types';
+import { Course, ClassGroup, User } from '../types';
 import { useNavigate } from 'react-router-dom';
 
 export const ProfileCompletion: React.FC = () => {
@@ -12,7 +12,7 @@ export const ProfileCompletion: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   
   const [formData, setFormData] = useState({
-    name: '',
+    name: user?.name || '',
     rm: '',
     courseId: '',
     classId: ''
@@ -40,7 +40,13 @@ export const ProfileCompletion: React.FC = () => {
     setError(null);
 
     try {
-      await storageService.updateUserProfile(user.uid, formData);
+      // FIX: Ensure essential data like email and role are persisted with the profile
+      const profileData: Partial<User> = {
+        ...formData,
+        email: user.email,
+        role: user.role,
+      };
+      await storageService.updateUserProfile(user.uid, profileData);
       await refreshProfile();
       navigate('/dashboard');
     } catch (err: any) {

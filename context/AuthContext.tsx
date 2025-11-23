@@ -9,6 +9,7 @@ interface AuthContextType {
   login: (email: string, password?: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -62,8 +63,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // O listener atualizará o user para null e loading para false
   };
 
+  const refreshProfile = async () => {
+    if (user) {
+      setLoading(true);
+      try {
+        const updatedUser = await storageService.getUserProfile(user.uid);
+        setUser(updatedUser);
+      } catch (e) {
+        console.error("Falha ao atualizar o perfil", e);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, logout, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );

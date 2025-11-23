@@ -88,6 +88,7 @@ export interface IStorageService {
   onAuthStateChanged(callback: (user: User | null) => void): () => void;
   
   updateUserProfile(uid: string, data: Partial<User>): Promise<User>;
+  getUserProfile(uid: string): Promise<User | null>;
 
   // Admin: User Management
   getUsers(options: PaginatedQueryOptions): Promise<PaginatedResult<User>>;
@@ -108,8 +109,10 @@ export interface IStorageService {
   // Events
   getEvents(options: PaginatedQueryOptions): Promise<PaginatedResult<SchoolEvent>>;
   getEventById(id: string): Promise<SchoolEvent | undefined>;
+  getEventsByIds(ids: string[]): Promise<SchoolEvent[]>; // Otimização
   getAvailableEventsForUser(user: User): Promise<SchoolEvent[]>;
   getPublicEvents(): Promise<SchoolEvent[]>;
+  getEventsByParentId(parentId: string): Promise<SchoolEvent[]>; // Novo método
   createEvent(event: SchoolEvent): Promise<void>;
   updateEvent(updatedEvent: SchoolEvent): Promise<void>;
   deleteEvent(eventId: string): Promise<void>;

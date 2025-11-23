@@ -154,6 +154,13 @@ class MockStorageService implements IStorageService {
     return updatedUser;
   }
 
+  async getUserProfile(uid: string): Promise<User | null> {
+      await delay(100);
+      const users = this.getItems<User>(STORAGE_KEYS.USERS);
+      const user = users.find(u => u.uid === uid);
+      return user || null;
+  }
+
   // --- Admin: User Management ---
   async getUsers(options: PaginatedQueryOptions): Promise<PaginatedResult<User>> {
     await delay(500);
@@ -302,6 +309,18 @@ class MockStorageService implements IStorageService {
     await delay(200);
     const events = this.getItems<SchoolEvent>(STORAGE_KEYS.EVENTS);
     return events.find(e => e.id === id);
+  }
+
+  async getEventsByIds(ids: string[]): Promise<SchoolEvent[]> {
+    await delay(200);
+    const events = this.getItems<SchoolEvent>(STORAGE_KEYS.EVENTS);
+    return events.filter(e => ids.includes(e.id));
+  }
+  
+  async getEventsByParentId(parentId: string): Promise<SchoolEvent[]> {
+    await delay(200);
+    const events = this.getItems<SchoolEvent>(STORAGE_KEYS.EVENTS);
+    return events.filter(e => e.parentId === parentId);
   }
 
   async getAvailableEventsForUser(user: User): Promise<SchoolEvent[]> {
@@ -467,13 +486,18 @@ class MockStorageService implements IStorageService {
     if (exists) throw new Error("Você já está inscrito neste evento");
 
     // 3. Validate Time Conflict (Robust integer comparison)
+    // FIX: N+1 query bug. Fetch all events for enrollments at once.
     const userEnrollments = await this.getEnrollmentsForUser(userId);
+    const enrolledEventIds = [...new Set(userEnrollments.map(e => e.eventId))];
+    const enrolledEvents = await this.getEventsByIds(enrolledEventIds);
+    const enrolledEventsMap = new Map(enrolledEvents.map(e => [e.id, e]));
+
     const targetDate = session.date;
     const targetStart = timeToMinutes(session.startTime);
     const targetEnd = timeToMinutes(session.endTime);
 
     for (const enrollment of userEnrollments) {
-      const e = events.find(ev => ev.id === enrollment.eventId);
+      const e = enrolledEventsMap.get(enrollment.eventId);
       if (!e) continue;
       const s = e.sessions.find(ses => ses.id === enrollment.sessionId);
       if (!s) continue;
@@ -531,8 +555,8 @@ class MockStorageService implements IStorageService {
       }
     }
 
-    // Mark as canceled
-    enrollments[enrIndex].status = EnrollmentStatus.CANCELED;
+    // FIX: Remove enrollment instead of changing status to match Firebase behavior
+    enrollments.splice(enrIndex, 1);
     localStorage.setItem(STORAGE_KEYS.ENROLLMENTS, JSON.stringify(enrollments));
   }
 

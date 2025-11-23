@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { SchoolEvent, EventSession, Enrollment } from '../types';
+import { SchoolEvent, Enrollment } from '../types';
 import { storageService } from '../services/storage';
 import { useAuth } from '../context/AuthContext';
 import { Modal } from '../components/Modal';
 import { Pagination } from '../components/Pagination';
 import { useNavigate } from 'react-router-dom';
 import { formatDate } from '../utils/formatters';
+import { useEnrollmentHandler } from '../hooks/useEnrollmentHandler';
 
 // --- Sub-component for Memoization ---
 interface DashboardEventCardProps {
@@ -128,13 +129,18 @@ export const Dashboard: React.FC = () => {
   
   // UI State
   const [selectedEvent, setSelectedEvent] = useState<SchoolEvent | null>(null);
-  const [feedback, setFeedback] = useState<{type: 'success'|'error', msg: string} | null>(null);
-  const [conflictData, setConflictData] = useState<{name: string, time: string} | null>(null);
+
+  const onEnrollSuccess = useCallback(() => {
+      setSelectedEvent(null);
+      loadData(); // Recarrega tudo para garantir consistência
+  }, []);
+  
+  const { handleEnroll, isEnrolling, feedback, conflictData, clearState } = useEnrollmentHandler(user, onEnrollSuccess);
   
   // Filters & Pagination
   const [searchTerm, setSearchTerm] = useState('');
   const [filterDate, setFilterDate] = useState('');
-  const [showPastEvents, setShowPastEvents] = useState(false); // New State for Past Events
+  const [showPastEvents, setShowPastEvents] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 9;
 
@@ -160,8 +166,15 @@ export const Dashboard: React.FC = () => {
     }
   }, [events, selectedEvent]);
 
-  const hasChildren = useCallback((eventId: string) => {
-      return events.some(e => e.parentId === eventId);
+  // FIX: PERFORMANCE - Pre-calculate parent IDs to avoid repeated lookups
+  const parentIds = useMemo(() => {
+      const ids = new Set<string>();
+      events.forEach(e => {
+          if (e.parentId) {
+              ids.add(e.parentId);
+          }
+      });
+      return ids;
   }, [events]);
 
   // 1. Filter Logic (Memoized)
@@ -174,7 +187,6 @@ export const Dashboard: React.FC = () => {
           const matchesSearch = evt.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                                 evt.description.toLowerCase().includes(searchTerm.toLowerCase());
           
-          // Gather all related sessions (Parent + Children)
           const children = events.filter(c => c.parentId === evt.id);
           const allSessions = [...evt.sessions, ...children.flatMap(c => c.sessions)];
           
@@ -182,8 +194,6 @@ export const Dashboard: React.FC = () => {
               ? allSessions.some(s => s.date === filterDate) 
               : true;
 
-          // Past Events Logic
-          // Keep event if ShowPastEvents is TRUE OR if it has at least one future/today session
           const isFutureOrActive = showPastEvents || allSessions.some(s => s.date >= today);
 
           return matchesSearch && matchesDate && isFutureOrActive;
@@ -205,49 +215,14 @@ export const Dashboard: React.FC = () => {
       return myEnrollments.some(e => e.eventId === eventId && e.sessionId === sessionId);
   };
 
-  // Handlers wrapped in useCallback for children
-  const handleEnroll = useCallback(async (sessionId: string) => {
-    if (!user || !selectedEvent) return;
-    setFeedback(null);
-    setConflictData(null);
-    
-    try {
-        const newEnrollment = await storageService.createEnrollment(user.uid, selectedEvent.id, sessionId);
-        setFeedback({ type: 'success', msg: 'Inscrição realizada com sucesso!' });
-        
-        // Optimistic/Immediate update of enrollments to reflect in UI instantly
-        setMyEnrollments(prev => [...prev, newEnrollment]);
-
-        // Refresh events (update capacity) but DO NOT refresh enrollments immediately
-        // to prevent race conditions where the backend might return stale enrollment list
-        const updatedEvents = await storageService.getAvailableEventsForUser(user);
-        setEvents(updatedEvents);
-        
-        setTimeout(() => {
-            // Close modal on success
-            setSelectedEvent(null);
-        }, 1500);
-    } catch (error: any) {
-        const msg = error.message || '';
-        if (msg.startsWith('CONFLICT|')) {
-            const [_, name, start, end] = msg.split('|');
-            setConflictData({ name, time: `${start} - ${end}` });
-        } else {
-            setFeedback({ type: 'error', msg: msg || 'Falha ao inscrever' });
-        }
-    }
-  }, [user, selectedEvent]); 
-
   const handleEventAction = useCallback((event: SchoolEvent) => {
-      const hasSubs = events.some(e => e.parentId === event.id);
-      if (hasSubs) {
+      if (parentIds.has(event.id)) {
           navigate(`/event/${event.id}`);
       } else {
-          setFeedback(null); 
-          setConflictData(null); 
+          clearState(); 
           setSelectedEvent(event);
       }
-  }, [events, navigate]);
+  }, [parentIds, navigate, clearState]);
 
   return (
     <div className="space-y-8">
@@ -335,7 +310,7 @@ export const Dashboard: React.FC = () => {
                     <DashboardEventCard 
                         key={event.id} 
                         event={event} 
-                        hasChildren={hasChildren(event.id)}
+                        hasChildren={parentIds.has(event.id)}
                         onAction={handleEventAction}
                     />
                 ))}
@@ -434,11 +409,11 @@ export const Dashboard: React.FC = () => {
                                             </button>
                                         ) : (
                                             <button
-                                                onClick={() => handleEnroll(session.id)}
-                                                disabled={full || isPast}
-                                                className={`w-full sm:w-auto px-6 py-2.5 rounded-lg font-bold shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition-all ${full || isPast ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-primary text-white hover:bg-indigo-700 hover:shadow-md'}`}
+                                                onClick={() => selectedEvent && handleEnroll(selectedEvent, session.id)}
+                                                disabled={full || isPast || isEnrolling}
+                                                className={`w-full sm:w-auto px-6 py-2.5 rounded-lg font-bold shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition-all ${full || isPast ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-primary text-white hover:bg-indigo-700 hover:shadow-md'} disabled:opacity-70`}
                                             >
-                                                {isPast ? 'Encerrado' : full ? 'Lotado' : 'Inscrever'}
+                                                {isEnrolling ? 'Inscrevendo...' : isPast ? 'Encerrado' : full ? 'Lotado' : 'Inscrever'}
                                             </button>
                                         )}
                                     </div>

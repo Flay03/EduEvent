@@ -5,6 +5,7 @@ import { storageService } from '../services/storage';
 import { useAuth } from '../context/AuthContext';
 import { Modal } from '../components/Modal';
 import { formatDate } from '../utils/formatters';
+import { useEnrollmentHandler } from '../hooks/useEnrollmentHandler';
 
 export const EventDetails: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -16,30 +17,32 @@ export const EventDetails: React.FC = () => {
     const [myEnrollments, setMyEnrollments] = useState<Enrollment[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // Enrollment Logic (duplicated from Dashboard due to isolation)
     const [selectedEventForEnroll, setSelectedEventForEnroll] = useState<SchoolEvent | null>(null);
-    const [feedback, setFeedback] = useState<{type: 'success'|'error', msg: string} | null>(null);
-    const [conflictData, setConflictData] = useState<{name: string, time: string} | null>(null);
+
+    const onEnrollSuccess = useCallback(() => {
+        setSelectedEventForEnroll(null);
+        loadData(); // Recarrega tudo para garantir consistência
+    }, []);
+
+    const { handleEnroll, isEnrolling, feedback, conflictData, clearState } = useEnrollmentHandler(user, onEnrollSuccess);
 
     const loadData = useCallback(async () => {
         if (!id || !user) return;
-        setLoading(prev => prev && true); // Keep loading if initial load
+        setLoading(true);
         try {
-            // 1. Get Parent Event
-            const pEvent = await storageService.getEventById(id);
+            const [pEvent, children, enrollments] = await Promise.all([
+                storageService.getEventById(id),
+                storageService.getEventsByParentId(id), // FIX: Use efficient query
+                storageService.getEnrollmentsForUser(user.uid)
+            ]);
+            
             if (!pEvent) {
                 navigate('/dashboard');
                 return;
             }
+
             setParentEvent(pEvent);
-
-            // 2. Get All Events visible to user to filter children
-            const allVisible = await storageService.getAvailableEventsForUser(user);
-            const children = allVisible.filter(e => e.parentId === id);
             setChildEvents(children);
-
-            // 3. Get Enrollments
-            const enrollments = await storageService.getEnrollmentsForUser(user.uid);
             setMyEnrollments(enrollments);
 
         } catch (error) {
@@ -56,11 +59,10 @@ export const EventDetails: React.FC = () => {
     // Sync selectedEventForEnroll when data updates
     useEffect(() => {
         if (selectedEventForEnroll) {
-            if (parentEvent && parentEvent.id === selectedEventForEnroll.id) {
-                if(parentEvent !== selectedEventForEnroll) setSelectedEventForEnroll(parentEvent);
-            } else {
-                const child = childEvents.find(c => c.id === selectedEventForEnroll.id);
-                if (child && child !== selectedEventForEnroll) setSelectedEventForEnroll(child);
+            const allEvents = [parentEvent, ...childEvents].filter(Boolean) as SchoolEvent[];
+            const updatedEvent = allEvents.find(e => e.id === selectedEventForEnroll.id);
+            if (updatedEvent && updatedEvent !== selectedEventForEnroll) {
+                setSelectedEventForEnroll(updatedEvent);
             }
         }
     }, [parentEvent, childEvents, selectedEventForEnroll]);
@@ -69,45 +71,8 @@ export const EventDetails: React.FC = () => {
         return myEnrollments.some(e => e.eventId === eventId && e.sessionId === sessionId);
     };
 
-    const handleEnroll = useCallback(async (sessionId: string) => {
-        if (!user || !selectedEventForEnroll) return;
-        setFeedback(null);
-        setConflictData(null);
-        
-        try {
-            const newEnrollment = await storageService.createEnrollment(user.uid, selectedEventForEnroll.id, sessionId);
-            setFeedback({ type: 'success', msg: 'Inscrição realizada com sucesso!' });
-            
-            // Optimistic update for UI responsiveness
-            setMyEnrollments(prev => [...prev, newEnrollment]);
-            
-            // Reload capacity logic manually without reloading enrollments (avoid race condition)
-            if (id) {
-                 const pEvent = await storageService.getEventById(id);
-                 if (pEvent) setParentEvent(pEvent);
-
-                 const allVisible = await storageService.getAvailableEventsForUser(user);
-                 const children = allVisible.filter(e => e.parentId === id);
-                 setChildEvents(children);
-            }
-            
-            setTimeout(() => {
-                setSelectedEventForEnroll(null);
-            }, 1500);
-        } catch (error: any) {
-            const msg = error.message || '';
-            if (msg.startsWith('CONFLICT|')) {
-                const [_, name, start, end] = msg.split('|');
-                setConflictData({ name, time: `${start} - ${end}` });
-            } else {
-                setFeedback({ type: 'error', msg: msg || 'Falha ao inscrever' });
-            }
-        }
-    }, [user, selectedEventForEnroll, id]);
-
     const openEnrollModal = (event: SchoolEvent) => {
-        setFeedback(null);
-        setConflictData(null);
+        clearState();
         setSelectedEventForEnroll(event);
     }
 
@@ -231,7 +196,6 @@ export const EventDetails: React.FC = () => {
                 </div>
             )}
 
-            {/* Reusing the Modal Logic (Identical to Dashboard for consistency) */}
             <Modal 
                 isOpen={!!selectedEventForEnroll} 
                 onClose={() => setSelectedEventForEnroll(null)} 
@@ -314,11 +278,11 @@ export const EventDetails: React.FC = () => {
                                                     </button>
                                                 ) : (
                                                     <button
-                                                        onClick={() => handleEnroll(session.id)}
-                                                        disabled={full}
-                                                        className={`w-full sm:w-auto px-6 py-2.5 rounded-lg font-bold shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition-all ${full ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-primary text-white hover:bg-indigo-700 hover:shadow-md'}`}
+                                                        onClick={() => selectedEventForEnroll && handleEnroll(selectedEventForEnroll, session.id)}
+                                                        disabled={full || isEnrolling}
+                                                        className={`w-full sm:w-auto px-6 py-2.5 rounded-lg font-bold shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition-all ${full ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-primary text-white hover:bg-indigo-700 hover:shadow-md'} disabled:opacity-70`}
                                                     >
-                                                        {full ? 'Lotado' : 'Inscrever'}
+                                                        {isEnrolling ? 'Inscrevendo...' : full ? 'Lotado' : 'Inscrever'}
                                                     </button>
                                                 )}
                                             </div>

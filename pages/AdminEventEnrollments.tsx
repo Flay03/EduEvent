@@ -5,6 +5,15 @@ import { storageService } from '../services/storage';
 import { formatDate } from '../utils/formatters';
 import { Modal } from '../components/Modal';
 
+// Helper to safely format a value for CSV
+const escapeCsv = (value: any): string => {
+    const str = String(value == null ? '' : value);
+    if (/[",\n\r]/.test(str)) {
+        return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+};
+
 export const AdminEventEnrollments: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const [event, setEvent] = useState<SchoolEvent | null>(null);
@@ -28,25 +37,24 @@ export const AdminEventEnrollments: React.FC = () => {
     }, [id]);
 
     const handleExport = () => {
-        if (enrollments.length === 0) return;
+        if (filteredEnrollments.length === 0) return;
         
-        // Prepare CSV data
         const headers = ['Nome', 'Email', 'RM', 'Data Sessão', 'Horário', 'Data Inscrição'];
         const csvContent = [
             headers.join(','),
-            ...enrollments.map(row => {
+            ...filteredEnrollments.map(row => {
                 return [
-                    JSON.stringify(row.user.name),
-                    JSON.stringify(row.user.email),
-                    JSON.stringify(row.user.rm),
-                    JSON.stringify(formatDate(row.session.date)),
-                    JSON.stringify(`${row.session.startTime} - ${row.session.endTime}`),
-                    JSON.stringify(new Date(row.enrolledAt).toLocaleString('pt-BR'))
+                    escapeCsv(row.user.name),
+                    escapeCsv(row.user.email),
+                    escapeCsv(row.user.rm),
+                    escapeCsv(formatDate(row.session.date)),
+                    escapeCsv(`${row.session.startTime} - ${row.session.endTime}`),
+                    escapeCsv(new Date(row.enrolledAt).toLocaleString('pt-BR'))
                 ].join(',');
             })
         ].join('\n');
 
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' }); // Add BOM for Excel compatibility
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
@@ -64,7 +72,6 @@ export const AdminEventEnrollments: React.FC = () => {
         }
     };
 
-    // Filtering
     const filteredEnrollments = enrollments.filter(enr => 
         enr.user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         enr.user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -76,7 +83,6 @@ export const AdminEventEnrollments: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            {/* Responsive Header */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-center space-x-3">
                     <Link to="/admin/events" className="text-gray-500 hover:text-gray-700 font-medium flex-shrink-0">
@@ -100,7 +106,7 @@ export const AdminEventEnrollments: React.FC = () => {
                     />
                     <button 
                         onClick={handleExport}
-                        disabled={enrollments.length === 0}
+                        disabled={filteredEnrollments.length === 0}
                         className="w-auto bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-700 flex justify-center items-center disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-sm"
                         title="Exportar CSV"
                     >
@@ -112,14 +118,12 @@ export const AdminEventEnrollments: React.FC = () => {
                 </div>
             </div>
 
-            {/* Content Area */}
             {filteredEnrollments.length === 0 ? (
                 <div className="bg-white shadow rounded-lg p-8 text-center text-gray-500">
                     {searchTerm ? "Nenhum aluno encontrado para esta busca." : "Nenhum inscrito neste evento até o momento."}
                 </div>
             ) : (
                 <>
-                    {/* Desktop View: Table */}
                     <div className="hidden md:block bg-white shadow overflow-hidden sm:rounded-lg">
                         <table className="min-w-full divide-y divide-gray-200">
                             <thead className="bg-gray-50">
@@ -162,7 +166,6 @@ export const AdminEventEnrollments: React.FC = () => {
                         </table>
                     </div>
 
-                    {/* Mobile View: Cards */}
                     <div className="md:hidden space-y-4">
                         {filteredEnrollments.map((enr) => (
                             <div key={enr.id} className="bg-white shadow rounded-lg p-4 border border-gray-100">

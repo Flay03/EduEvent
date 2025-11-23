@@ -9,26 +9,43 @@ export const MyEnrollments: React.FC = () => {
   const { user } = useAuth();
   const [data, setData] = useState<{enrollment: Enrollment, event: SchoolEvent, session: any}[]>([]);
   const [cancelId, setCancelId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
       if (!user) return;
-      const enrollments = await storageService.getEnrollmentsForUser(user.uid);
-      // FIX: getEvents expects arguments and returns a paginated result.
-      // We fetch a large number to simulate getting all events for this view.
-      const eventsResult = await storageService.getEvents({ limit: 1000, filters: {} });
-      
-      // Join data
-      const joined = enrollments.map(enr => {
-          // FIX: Access the .data property of the paginated result.
-          const evt = eventsResult.data.find(e => e.id === enr.eventId);
-          if (!evt) return null;
-          const sess = evt.sessions.find(s => s.id === enr.sessionId);
-          if (!sess) return null;
-          return { enrollment: enr, event: evt, session: sess };
-      }).filter(Boolean) as any[];
+      setLoading(true);
+      try {
+        // 1. Fetch user's enrollments
+        const enrollments = await storageService.getEnrollmentsForUser(user.uid);
+        if (enrollments.length === 0) {
+            setData([]);
+            setLoading(false);
+            return;
+        }
 
-      setData(joined);
+        // 2. Extract unique event IDs
+        const eventIds = [...new Set(enrollments.map(enr => enr.eventId))];
+        
+        // 3. Fetch ONLY the necessary events
+        const events = await storageService.getEventsByIds(eventIds);
+        const eventsMap = new Map(events.map(e => [e.id, e]));
+
+        // 4. Join data locally
+        const joined = enrollments.map(enr => {
+            const evt = eventsMap.get(enr.eventId);
+            if (!evt) return null;
+            const sess = evt.sessions.find(s => s.id === enr.sessionId);
+            if (!sess) return null;
+            return { enrollment: enr, event: evt, session: sess };
+        }).filter(Boolean) as any[];
+
+        setData(joined);
+      } catch (error) {
+        console.error("Failed to load enrollments data:", error);
+        setData([]); // Clear data on error
+      } finally {
+        setLoading(false);
+      }
   };
 
   useEffect(() => {
@@ -44,7 +61,7 @@ export const MyEnrollments: React.FC = () => {
             console.error(e);
           } finally {
             setCancelId(null);
-            setLoading(false);
+            // No need to set loading to false here, loadData will do it
             loadData();
           }
       }
@@ -54,7 +71,11 @@ export const MyEnrollments: React.FC = () => {
       <div className="space-y-6">
           <h1 className="text-2xl font-bold text-gray-900">Minha Agenda</h1>
           
-          {data.length === 0 ? (
+          {loading ? (
+              <div className="bg-white p-8 rounded-lg shadow text-center text-gray-500">
+                  Carregando suas inscrições...
+              </div>
+          ) : data.length === 0 ? (
               <div className="bg-white p-8 rounded-lg shadow text-center text-gray-500">
                   Você ainda não se inscreveu em nenhum evento.
               </div>

@@ -7,11 +7,12 @@ import { auth, db } from './firebase';
 import { formatDate, timeToMinutes } from '../utils/formatters';
 import { 
   signInWithEmailAndPassword, 
-  signInWithPopup, // ALTERADO: Usando Popup
+  signInWithPopup,
   GoogleAuthProvider,
   signOut, 
   onAuthStateChanged,
-  AuthError
+  setPersistence,
+  browserSessionPersistence
 } from 'firebase/auth';
 import { 
   doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc,
@@ -28,6 +29,7 @@ export class FirebaseStorageService implements IStorageService {
     if (!password) throw new Error("A senha é obrigatória.");
 
     try {
+      await setPersistence(auth, browserSessionPersistence);
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const fbUser = userCredential.user;
       return this._fetchUserProfile(fbUser);
@@ -41,6 +43,7 @@ export class FirebaseStorageService implements IStorageService {
   async loginWithGoogle(): Promise<void> {
       if (!auth) throw new Error("Serviço de autenticação não inicializado.");
       try {
+          await setPersistence(auth, browserSessionPersistence);
           const provider = new GoogleAuthProvider();
           // ALTERADO: Login via Popup para evitar reload da página e problemas de redirecionamento
           await signInWithPopup(auth, provider);
@@ -171,6 +174,19 @@ export class FirebaseStorageService implements IStorageService {
 
     // Retorna dados atualizados. O listener onAuthStateChanged cuidará de atualizar a UI.
     return { ...data, uid, email: '', role: UserRole.USER, isOnboarded: true } as User; 
+  }
+
+  async getUserProfile(uid: string): Promise<User | null> {
+      if (!db || !auth) throw new Error("Serviço de autenticação ou banco de dados não inicializado.");
+      
+      const fbUser = auth.currentUser;
+      if (!fbUser || fbUser.uid !== uid) {
+          console.warn("Tentativa de buscar perfil de um usuário diferente/deslogado.");
+          return null;
+      }
+
+      // Reutiliza a lógica de busca de perfil
+      return this._fetchUserProfile(fbUser);
   }
 
   // --- ADMIN: USER MANAGEMENT (PAGINATED) ---
@@ -338,6 +354,31 @@ export class FirebaseStorageService implements IStorageService {
       return snap.exists() ? this.mapDocToEvent(snap) : undefined;
   }
 
+  async getEventsByIds(ids: string[]): Promise<SchoolEvent[]> {
+    if (!db || ids.length === 0) return [];
+    
+    // Firestore 'in' query supports max 30 elements. Chunk if needed.
+    const MAX_IN_QUERIES = 30;
+    const allEvents: SchoolEvent[] = [];
+    
+    for (let i = 0; i < ids.length; i += MAX_IN_QUERIES) {
+      const chunk = ids.slice(i, i + MAX_IN_QUERIES);
+      const q = query(collection(db, 'events'), where(documentId(), 'in', chunk));
+      const querySnapshot = await getDocs(q);
+      const chunkEvents = querySnapshot.docs.map(doc => this.mapDocToEvent(doc));
+      allEvents.push(...chunkEvents);
+    }
+    
+    return allEvents;
+  }
+
+  async getEventsByParentId(parentId: string): Promise<SchoolEvent[]> {
+    if (!db) return [];
+    const q = query(collection(db, 'events'), where('parentId', '==', parentId));
+    const qs = await getDocs(q);
+    return qs.docs.map(doc => this.mapDocToEvent(doc));
+  }
+
   async getAvailableEventsForUser(user: User): Promise<SchoolEvent[]> {
       if (!db) return [];
       // This function fetches all visible events and is used by the student dashboard.
@@ -446,7 +487,6 @@ export class FirebaseStorageService implements IStorageService {
 
       // 3. Join data in memory
       return enrollments.map(enr => {
-          // FIX: Provide a type for the user object to prevent type errors when falling back to an empty object.
           const user: Partial<User> = usersMap.get(enr.userId) || {};
           const session = event.sessions.find(s => s.id === enr.sessionId);
           return {
@@ -473,8 +513,13 @@ export class FirebaseStorageService implements IStorageService {
       if (!db) throw new Error("Banco de dados não inicializado.");
 
       // A checagem de conflito é feita ANTES da transação. Para 100% de robustez, usar Cloud Functions.
-      const [userEnrollments, eventTarget] = await Promise.all([this.getEnrollmentsForUser(userId), this.getEventById(eventId)]);
+      // A lógica foi otimizada para buscar todos os eventos de uma vez, melhorando o desempenho.
+      const userEnrollments = await this.getEnrollmentsForUser(userId);
+      const enrolledEventIds = [...new Set(userEnrollments.map(e => e.eventId))];
+      const [enrolledEvents, eventTarget] = await Promise.all([this.getEventsByIds(enrolledEventIds), this.getEventById(eventId)]);
+
       if (!eventTarget) throw new Error("Evento não encontrado.");
+      const enrolledEventsMap = new Map(enrolledEvents.map(e => [e.id, e]));
       
       const sessionTarget = eventTarget.sessions.find(s => s.id === sessionId);
       if (!sessionTarget) throw new Error("Sessão não encontrada.");
@@ -483,7 +528,7 @@ export class FirebaseStorageService implements IStorageService {
 
       for (const enr of userEnrollments) {
           if (enr.eventId === eventId) throw new Error("Você já está inscrito neste evento.");
-          const existingEvent = await this.getEventById(enr.eventId);
+          const existingEvent = enrolledEventsMap.get(enr.eventId);
           if (!existingEvent) continue;
           const existingSession = existingEvent.sessions.find(s => s.id === enr.sessionId);
           if (existingSession?.date === sessionTarget.date) {
